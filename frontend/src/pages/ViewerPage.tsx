@@ -1,187 +1,262 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useCombinations } from "../hooks/useCombinations";
-import VideoPlayer, { type VideoPlayerHandle } from "../components/VideoPlayer";
-import TgpView from "../components/TgpView";
-import GallerySlideshow from "../components/GallerySlideshow";
+import { useNavigate } from "react-router-dom";
+import { api } from "../api/client";
+import type { ViewerState } from "../api/types";
+import { usePageShortcuts } from "../app/shortcuts";
+import { Button, IconButton, Segmented } from "../components/controls";
+import { EmptyState, PageHeader } from "../components/feedback";
+import { openMenuAt } from "../components/Menu";
+import { Thumbnail } from "../components/Thumbnail";
+import { bumpData, dataVersion, pushUndo, showError, showToast, undo, type UndoEntry } from "../state/feedback";
+import { mappingSessions } from "../state/mapping";
+import { reloadLibrary } from "../state/status";
+import { createStore, useStore } from "../state/store";
+import { Slideshow } from "./viewer/Slideshow";
+import { VideoStage, type PlayerHandle } from "./viewer/VideoStage";
+
+/** Viewer data outlives the page, so undo can update it from anywhere. */
+const viewerStore = createStore<ViewerState | null>(null);
+
+type Mode = "sheet" | "video";
+
+const identity = (v: ViewerState | null) =>
+  v?.current ? `${v.current.video.filename}\u0000${v.current.gallery.name}` : "";
+
+/** Exclude a pairing and record how to undo it (SPEC §3.6). */
+async function excludePairing(filename: string, gallery: string): Promise<UndoEntry> {
+  const { exclusionId, viewer } = await api.exclude(filename, gallery);
+  viewerStore.set(viewer);
+  // The viewer decision supersedes an unsaved Gallery Mapping edit of the same cell.
+  mappingSessions.galleries.set((session) => {
+    const cells = session.pending[filename];
+    if (!cells?.[gallery]) return session;
+    const { [gallery]: _, ...rest } = cells;
+    const pending = { ...session.pending };
+    if (Object.keys(rest).length) pending[filename] = rest;
+    else delete pending[filename];
+    return { ...session, pending };
+  });
+  bumpData();
+  return {
+    label: "Exclude Pairing",
+    undo: async () => {
+      const { viewer: restored } = await api.restore(exclusionId);
+      viewerStore.set(restored);
+      bumpData();
+      return { label: "Exclude Pairing", undo: () => excludePairing(filename, gallery) };
+    },
+  };
+}
 
 export default function ViewerPage() {
-  const { combination, next, prev } = useCombinations();
-  const [isTgpShown, setIsTgpShown] = useState(true);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const videoRef = useRef<VideoPlayerHandle>(null);
-
-  const handleNext = useCallback(() => {
-    setIsPlaying(false);
-    setIsTgpShown(true);
-    next();
-  }, [next]);
-
-  const handlePrev = useCallback(() => {
-    setIsPlaying(false);
-    setIsTgpShown(true);
-    prev();
-  }, [prev]);
-
-  const handleToggleTgp = useCallback(() => {
-    setIsTgpShown((prev) => {
-      if (prev) {
-        setIsPlaying(true);
-      } else {
-        setIsPlaying(false);
-      }
-      return !prev;
-    });
-  }, []);
-
-  const handleTogglePlay = useCallback(() => {
-    setIsPlaying((p) => !p);
-  }, []);
+  const viewer = useStore(viewerStore);
+  const version = useStore(dataVersion);
+  const navigate = useNavigate();
+  const [mode, setMode] = useState<Mode>("sheet");
+  // Once opened, the video stays mounted for this combination, so returning to it resumes.
+  const [videoOpened, setVideoOpened] = useState(false);
+  const player = useRef<PlayerHandle>(null);
+  const queue = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-
-      switch (e.key) {
-        case "p":
-          e.preventDefault();
-          handleToggleTgp();
-          break;
-        case "b":
-          e.preventDefault();
-          handlePrev();
-          break;
-        case "n":
-          e.preventDefault();
-          handleNext();
-          break;
-        case " ":
-          e.preventDefault();
-          if (!isTgpShown) handleTogglePlay();
-          break;
-        case "ArrowLeft":
-          e.preventDefault();
-          if (!isTgpShown) videoRef.current?.seekRelative(-10);
-          break;
-        case "ArrowRight":
-          e.preventDefault();
-          if (!isTgpShown) videoRef.current?.seekRelative(10);
-          break;
-        default:
-          if (!isTgpShown && e.key >= "0" && e.key <= "9") {
-            e.preventDefault();
-            videoRef.current?.seekToPercent(parseInt(e.key) / 10);
-          }
-      }
+    let cancelled = false;
+    api.viewer().then((v) => !cancelled && viewerStore.set(v)).catch((e) => showError("Couldn’t Load the Viewer", e));
+    return () => {
+      cancelled = true;
     };
+  }, [version]);
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleNext, handlePrev, handleToggleTgp, handleTogglePlay, isTgpShown]);
+  // A new combination always starts on its contact sheet.
+  const key = identity(viewer);
+  useEffect(() => {
+    setMode("sheet");
+    setVideoOpened(false);
+  }, [key]);
+  useEffect(() => {
+    if (mode === "video") setVideoOpened(true);
+  }, [mode]);
 
-  if (!combination) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", fontSize: 24 }}>
-        No combinations found.
-      </div>
-    );
-  }
+  // Prefetch the next contact sheet.
+  useEffect(() => {
+    if (viewer?.nextSheetUrl) {
+      const img = new Image();
+      img.decoding = "async";
+      img.src = viewer.nextSheetUrl;
+    }
+  }, [viewer?.nextSheetUrl]);
+
+  const current = viewer?.current ?? null;
+  useEffect(() => {
+    document.title = current ? `${current.video.title} – pvorg` : "Viewer – pvorg";
+  }, [current]);
+
+  // Actions run one at a time, in the order they were requested, and each reads the
+  // viewer state when it runs, so fast key presses are never dropped or stale (SPEC §7.1).
+  const run = useCallback((action: () => Promise<void>, failure: string) => {
+    queue.current = queue.current.then(action).catch((error) => showError(failure, error));
+    return queue.current;
+  }, []);
+
+  const move = (delta: number) =>
+    run(async () => viewerStore.set(await api.move(delta)), "Couldn’t Change Combination");
+
+  const exclude = () =>
+    run(async () => {
+      const live = viewerStore.get()?.current;
+      if (!live) return;
+      const entry = await excludePairing(live.video.filename, live.gallery.name);
+      pushUndo(entry);
+      showToast(`Excluded “${live.gallery.name}” from “${live.video.title}”`, "thumbsDown", {
+        label: "Undo",
+        run: () => void undo(),
+      });
+    }, "Couldn’t Exclude Pairing");
+
+  const toggleMode = () => current && setMode((m) => (m === "sheet" ? "video" : "sheet"));
+
+  usePageShortcuts((e) => {
+    if (!current) return false;
+    const key = e.key;
+    if (key === "p" || key === "P") return toggleMode(), true;
+    if (key === "b" || key === "B") return void move(-1), true;
+    if (key === "n" || key === "N") return void move(1), true;
+    if (key === "Backspace" || key === "Delete") return void exclude(), true;
+    if (mode !== "video" || !player.current?.isReady()) return false;
+    if (key === " ") return player.current.togglePlay(), true;
+    if (key === "ArrowLeft") return player.current.seekBy(-10), true;
+    if (key === "ArrowRight") return player.current.seekBy(10), true;
+    if (/^[0-9]$/.test(key)) return player.current.seekToFraction(Number(key) / 10), true;
+    return false;
+  });
+
+  if (!viewer) return <div className="viewer" aria-busy="true" />;
+
+  const header = (
+    <PageHeader
+      title={current?.video.title ?? "Viewer"}
+      subtitle={current?.video.credits ?? ""}
+      actions={
+        <>
+          <IconButton
+            icon="thumbsDown"
+            label={current ? `Exclude “${current.gallery.name}” from this video` : "Exclude Pairing"}
+            shortcut="⌫"
+            disabled={!current}
+            onClick={() => void exclude()}
+          />
+          <Segmented<Mode>
+            label="Display"
+            value={mode}
+            disabled={!current}
+            onChange={setMode}
+            options={[
+              { value: "sheet", label: "Contact Sheet", icon: "contactSheet", iconOnly: true, title: "Contact Sheet (P)" },
+              { value: "video", label: "Video", icon: "play", iconOnly: true, title: "Video (P)" },
+            ]}
+          />
+          <div className="button-group">
+            <IconButton icon="chevronLeft" label="Previous combination" shortcut="B"
+              disabled={!viewer.total || viewer.total < 2} onClick={() => void move(-1)} />
+            <IconButton icon="chevronRight" label="Next combination" shortcut="N"
+              disabled={!viewer.total || viewer.total < 2} onClick={() => void move(1)} />
+          </div>
+          <span className="viewer__position tabular" aria-live="polite"
+            style={{ visibility: viewer.total ? "visible" : "hidden" }}>
+            {(viewer.position + 1).toLocaleString()} of {viewer.total.toLocaleString()}
+          </span>
+        </>
+      }
+    />
+  );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      {/* Header bar */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          padding: "8px 16px",
-          gap: 12,
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg-secondary)",
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ flex: 1, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {combination.video.filename}
-        </div>
-
-        <button
-          onClick={handleToggleTgp}
-          style={{
-            padding: "4px 12px",
-            borderRadius: 6,
-            background: "var(--accent)",
-            color: "#fff",
-            fontSize: 13,
-            fontWeight: 500,
-          }}
-        >
-          {isTgpShown ? "VID" : "TGP"}
-        </button>
-
-        <button onClick={handlePrev} style={navBtnStyle}>
-          Prev
-        </button>
-        <button onClick={handleNext} style={navBtnStyle}>
-          Next
-        </button>
-
+    <div className="viewer">
+      {header}
+      {current ? (
         <div
-          style={{
-            fontWeight: 500,
-            color: "var(--text-secondary)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            maxWidth: 200,
-          }}
+          className="stage on-stage"
+          onContextMenu={(e) =>
+            openMenuAt(e, "Combination", [
+              { label: `Exclude “${current.gallery.name}” from This Video`, icon: "thumbsDown", onSelect: () => void exclude() },
+              { separator: true },
+              { label: "Open Video in New Tab", icon: "external",
+                onSelect: () => window.open(current.video.videoUrl, "_blank", "noopener") },
+            ])
+          }
         >
-          {combination.gallery.name}
+          <div className="stage__media" key={key}>
+            {mode === "sheet" &&
+              (current.video.sheetUrl ? (
+                <div className="stage__sheet" onDoubleClick={() => setMode("video")} title="Double-click to play">
+                  <Thumbnail src={current.video.sheetUrl} fit="contain" eager alt={`Contact sheet for ${current.video.title}`} />
+                </div>
+              ) : (
+                <div className="stage__state">
+                  <EmptyState icon="contactSheet" title="No Contact Sheet"
+                    actions={<Button variant="primary" onClick={() => setMode("video")}>Play Video</Button>}>
+                    A preview couldn’t be generated for this video. Reloading the library tries again.
+                  </EmptyState>
+                </div>
+              ))}
+            {(mode === "video" || videoOpened) && (
+              <div className="stage__video" hidden={mode !== "video"}>
+                <VideoStage
+                  ref={player}
+                  combination={current}
+                  active={mode === "video"}
+                  onShowContactSheet={() => setMode("sheet")}
+                />
+              </div>
+            )}
+          </div>
+          <Slideshow name={current.gallery.name} images={current.gallery.images} />
         </div>
-
-        <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-          {combination.index + 1}/{combination.total}
+      ) : (
+        <div className="stage stage--empty on-stage">
+          <ViewerEmpty viewer={viewer} onEditFilters={() => navigate("/filters")} onMapping={() => navigate("/mapping/galleries")} />
         </div>
-      </div>
-
-      {/* Main content */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* Video / TGP area (75%) */}
-        <div style={{ width: "75%", height: "100%", overflow: "hidden" }}>
-          {isTgpShown ? (
-            <TgpView tgpUrl={combination.video.tgp_url} />
-          ) : (
-            <VideoPlayer
-              ref={videoRef}
-              videoUrl={combination.video.url}
-              isPlaying={isPlaying}
-              onTogglePlay={handleTogglePlay}
-              spriteUrl={combination.video.sprite_url}
-              spriteVttUrl={combination.video.sprite_vtt_url}
-            />
-          )}
-        </div>
-
-        {/* Gallery slideshow (25%) */}
-        <div
-          style={{
-            width: "25%",
-            height: "100%",
-            borderLeft: "1px solid var(--border)",
-            overflow: "hidden",
-          }}
-        >
-          <GallerySlideshow images={combination.gallery.images} />
-        </div>
-      </div>
+      )}
     </div>
   );
 }
 
-const navBtnStyle: React.CSSProperties = {
-  padding: "4px 12px",
-  borderRadius: 6,
-  background: "var(--tag-bg)",
-  color: "var(--text-primary)",
-  fontSize: 13,
-  fontWeight: 500,
-};
+function ViewerEmpty({ viewer, onEditFilters, onMapping }: { viewer: ViewerState; onEditFilters: () => void; onMapping: () => void }) {
+  const empty = viewer.empty;
+  if (!empty) return null;
+  switch (empty.reason) {
+    case "noVideos":
+      return (
+        <EmptyState icon="film" title="No Videos" actions={<Button onClick={() => void reloadLibrary()}>Reload Library</Button>}>
+          pvorg didn’t find any videos in <code>{empty.videosPath}</code>.
+        </EmptyState>
+      );
+    case "noGalleries":
+      return (
+        <EmptyState icon="photos" title="No Galleries" actions={<Button onClick={() => void reloadLibrary()}>Reload Library</Button>}>
+          Add folders of images to <code>{empty.galleriesPath}</code>, then reload the library.
+        </EmptyState>
+      );
+    case "filters":
+      return (
+        <EmptyState
+          icon="filters"
+          title="No Matching Combinations"
+          actions={
+            <>
+              <Button variant="primary" onClick={onEditFilters}>Edit Filters</Button>
+              <Button onClick={() => void api.resetFilters().then(() => bumpData())}>Reset Filters</Button>
+            </>
+          }
+        >
+          Your filters exclude every video and gallery pairing.
+          {empty.tagsRequired && " Required tags only match videos marked Yes for them in Tag Mapping."}
+        </EmptyState>
+      );
+    default:
+      return (
+        <EmptyState icon="photos" title="No Combinations" actions={<Button onClick={onMapping}>Open Gallery Mapping</Button>}>
+          Every video is excluded from every gallery. Include some galleries in Gallery Mapping.
+        </EmptyState>
+      );
+  }
+}
