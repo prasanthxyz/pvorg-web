@@ -18,7 +18,7 @@ from scanner import VIDEO_EXTENSIONS, validate_video_filename
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate TGP contact sheets")
-    parser.add_argument("--config", type=Path, default=Path.home() / "pvorg.json")
+    parser.add_argument("--config", type=Path, default=None, help="pvorg.json (default: $PVORG_CONFIG or ~/pvorg.json)")
     args = parser.parse_args()
 
     config = load_config(args.config)

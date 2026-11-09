@@ -25,3 +25,6 @@ frontend/dist/
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Test caches
+.pytest_cache/

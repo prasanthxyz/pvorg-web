@@ -1,193 +1,84 @@
-"""FastAPI application entry point."""
+"""FastAPI application: the pvorg API plus the built single-page app."""
+
+from __future__ import annotations
 
 import logging
 import os
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.combinations import create_router as combinations_router
-from api.config_api import create_router as config_router
-from api.gallery_mapping import create_router as gallery_mapping_router
-from api.media import create_router as media_router
-from api.tag_mapping import create_router as tag_mapping_router
-from api.videos import create_router as videos_router
-from cache import MetadataCache
-from cleanup import (
-    cleanup_config_entries,
-    cleanup_orphaned_assets,
-    normalize_config_entries,
-)
-from config import CONFIG_PATH
-from preprocessor import run_preprocessing
+from api import cleanup_api, filters, library, mapping, media, system, viewer
+from pipeline import Pipeline
 from state import AppState
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-app_state = AppState()
-pipeline_lock = threading.Lock()
-pipeline_state_lock = threading.Lock()
-pipeline_running = threading.Event()
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+# Routes from before the redesign, kept so bookmarks still work.
+LEGACY_ROUTES = {"/config": "/filters", "/deleter": "/library", "/mapper": "/mapping/galleries",
+                 "/tag-mapper": "/mapping/tags"}
 
 
-def _startup_pipeline() -> None:
-    """Full startup: validate, cleanup, preprocess, report."""
-    with pipeline_lock:
-        if not app_state.config:
-            return
+def create_app(*, start_pipeline: bool = True, preprocess: bool = True) -> FastAPI:
+    state = AppState()
+    pipeline = Pipeline(state, preprocess=preprocess)
 
-        videos_path = app_state.config.videosPath
-        gallery_names = [g.name for g in app_state.galleries]
-        valid_filenames = {v.filename for v in app_state.videos}
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if start_pipeline:
+            pipeline.start()
+        yield
 
-        entries_normalized = normalize_config_entries(CONFIG_PATH)
+    app = FastAPI(title="pvorg", lifespan=lifespan)
+    app.state.pvorg = state
+    app.state.pipeline = pipeline
 
-        orphans_removed = cleanup_orphaned_assets(videos_path, valid_filenames)
+    port = os.environ.get("PVORG_PORT", "8000")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[f"http://127.0.0.1:{port}", f"http://localhost:{port}",
+                       "http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-        config_entries_removed = cleanup_config_entries(CONFIG_PATH, videos_path)
+    app.include_router(system.create_router(state, pipeline))
+    app.include_router(viewer.create_router(state))
+    app.include_router(filters.create_router(state))
+    app.include_router(library.create_router(state))
+    app.include_router(mapping.create_router(state))
+    app.include_router(cleanup_api.create_router(state))
+    app.include_router(media.create_router(state))
 
-        if config_entries_removed > 0 or entries_normalized > 0:
-            app_state.load()
+    for old, new in LEGACY_ROUTES.items():
+        app.add_api_route(old, lambda new=new: RedirectResponse(new, status_code=308), include_in_schema=False)
 
-        cache = MetadataCache(Path(videos_path) / "cache.json")
-        run_preprocessing(
-            videos=app_state.videos,
-            videos_path=videos_path,
-            cache=cache,
-            progress_callback=lambda msg: setattr(app_state, "preprocessing_progress", msg),
-            fail_on_error=True,
-        )
+    if FRONTEND_DIST.is_dir():
+        app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
 
-        report = {
-            "invalid_filenames_skipped": len(app_state.skipped_files),
-            "entries_normalized": entries_normalized,
-            "orphan_assets_removed": orphans_removed,
-            "stale_config_entries_removed": config_entries_removed,
-        }
-        app_state.startup_report = report
+        @app.get("/{path:path}", include_in_schema=False)
+        def spa(path: str) -> FileResponse:
+            """Serve built files, and index.html for client routes so deep links survive a refresh."""
+            if path.startswith("api/"):
+                raise HTTPException(status_code=404)
+            candidate = (FRONTEND_DIST / path).resolve()
+            if path and candidate.is_file() and FRONTEND_DIST in candidate.parents:
+                return FileResponse(candidate)
+            return FileResponse(FRONTEND_DIST / "index.html", headers={"Cache-Control": "no-cache"})
 
-        logger.info(
-            "\nStartup Cleanup Summary\n"
-            "-----------------------\n"
-            "Invalid filenames skipped:    %d\n"
-            "Entries normalized:           %d\n"
-            "Orphan assets removed:        %d\n"
-            "Stale config entries removed: %d",
-            report["invalid_filenames_skipped"],
-            report["entries_normalized"],
-            report["orphan_assets_removed"],
-            report["stale_config_entries_removed"],
-        )
-
-        app_state.ready = True
+    return app
 
 
-def _run_pipeline_or_die() -> None:
-    try:
-        _startup_pipeline()
-    except Exception:
-        logger.exception("Startup pipeline failed. Terminating process.")
-        os._exit(1)
-    finally:
-        pipeline_running.clear()
-
-
-def _claim_pipeline_slot() -> bool:
-    with pipeline_state_lock:
-        if pipeline_running.is_set():
-            return False
-        pipeline_running.set()
-        return True
-
-
-def _start_pipeline_worker() -> None:
-    startup_thread = threading.Thread(target=_run_pipeline_or_die, daemon=True)
-    startup_thread.start()
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app_state.load()
-    if _claim_pipeline_slot():
-        _start_pipeline_worker()
-    else:
-        logger.warning("Startup pipeline already running; skipped duplicate start")
-
-    yield
-
-
-app = FastAPI(title="pvorg", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-    ],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.get("/api/status")
-def get_status():
-    return {
-        "ready": app_state.ready,
-        "progress": app_state.preprocessing_progress,
-        "video_count": len(app_state.videos),
-        "gallery_count": len(app_state.galleries),
-        "combination_count": len(app_state.combinations),
-        "startup_report": app_state.startup_report,
-    }
-
-
-@app.post("/api/shuffle")
-def shuffle():
-    app_state.shuffle_combinations()
-    return {"total": len(app_state.combinations)}
-
-
-@app.post("/api/reload")
-def reload_config():
-    if not _claim_pipeline_slot():
-        return {"status": "already_running"}
-    try:
-        app_state.load()
-        app_state.ready = False
-        app_state.preprocessing_progress = "Reloading preprocessing..."
-        _start_pipeline_worker()
-        return {"status": "reloading"}
-    except Exception:
-        pipeline_running.clear()
-        raise
+app = create_app()
 
 
 def run() -> None:
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8000)
-
-
-app.include_router(combinations_router(app_state))
-app.include_router(config_router(app_state))
-app.include_router(media_router(app_state))
-app.include_router(videos_router(app_state))
-app.include_router(gallery_mapping_router(app_state))
-app.include_router(tag_mapping_router(app_state))
-
-# Serve the React build if it exists
-frontend_build = Path(__file__).parent.parent / "frontend" / "dist"
-if frontend_build.is_dir():
-    app.mount(
-        "/", StaticFiles(directory=str(frontend_build), html=True), name="frontend"
-    )
+    uvicorn.run("main:app", host="127.0.0.1", port=int(os.environ.get("PVORG_PORT", "8000")))

@@ -7,7 +7,12 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pydantic",
+    "pillow",
 ]
 
 [project.scripts]
 pvorg = "main:run"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

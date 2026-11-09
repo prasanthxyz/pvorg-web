@@ -1,7 +1,9 @@
-"""Generate video+gallery combinations with filter logic."""
+"""Combinations and the filter rules (SPEC §3.1)."""
+
+from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from scanner import Gallery, Video
 
@@ -11,34 +13,47 @@ class Combination:
     video: Video
     gallery: Gallery
 
+    @property
+    def id(self) -> str:
+        return f"{self.video.filename}\u0000{self.gallery.name}"
+
+
+@dataclass
+class Filters:
+    galleries: set[str] = field(default_factory=set)
+    studios: set[str] = field(default_factory=set)
+    tags: set[str] = field(default_factory=set)
+    cast: set[str] = field(default_factory=set)
+
+
+def video_passes(video: Video, filters: Filters) -> bool:
+    """Studio included, every required tag marked yes, every required cast member present."""
+    if video.studio not in filters.studios:
+        return False
+    if filters.cast and not filters.cast.issubset(video.actors):
+        return False
+    if filters.tags and not filters.tags.issubset(video.tags):
+        return False
+    return True
+
+
+def gallery_passes(gallery: Gallery, video: Video, filters: Filters) -> bool:
+    """Gallery included, and the video isn't excluded from it."""
+    return gallery.name in filters.galleries and gallery.name in video.related_galleries
+
 
 def generate_combinations(
     videos: list[Video],
     galleries: list[Gallery],
-    selected_galleries: set[str],
-    selected_studios: set[str],
-    selected_tags: set[str],
-    selected_cast: set[str],
+    filters: Filters,
+    rng: random.Random | None = None,
 ) -> list[Combination]:
-    """Replicate the SwiftUI generateCombinations() logic.
-
-    - Filter videos by studio, cast (subset), tags (subset)
-    - Pair each passing video with galleries that are both selected AND in video.related_galleries
-    - Shuffle the result
-    """
-    combinations: list[Combination] = []
-
-    for video in videos:
-        if video.studio not in selected_studios:
-            continue
-        if selected_cast and not selected_cast.issubset(set(video.actors)):
-            continue
-        if selected_tags and not selected_tags.issubset(set(video.tags)):
-            continue
-
-        for gallery in galleries:
-            if gallery.name in selected_galleries and gallery.name in video.related_galleries:
-                combinations.append(Combination(video=video, gallery=gallery))
-
-    random.shuffle(combinations)
+    combinations = [
+        Combination(video, gallery)
+        for video in videos
+        if video_passes(video, filters)
+        for gallery in galleries
+        if gallery_passes(gallery, video, filters)
+    ]
+    (rng or random).shuffle(combinations)
     return combinations

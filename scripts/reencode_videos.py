@@ -46,7 +46,7 @@ def reencode_video(input_path: Path, output_path: Path) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Re-encode videos for web playback")
-    parser.add_argument("--config", type=Path, default=Path.home() / "pvorg.json")
+    parser.add_argument("--config", type=Path, default=None, help="pvorg.json (default: $PVORG_CONFIG or ~/pvorg.json)")
     args = parser.parse_args()
 
     config = load_config(args.config)

@@ -33,13 +33,21 @@ def _get_video_duration(video_path: Path) -> float | None:
             [
                 FFPROBE, "-v", "error",
                 "-select_streams", "v:0",
-                "-show_entries", "stream=duration",
+                # Matroska and WebM report no per-stream duration; fall back to the container's.
+                "-show_entries", "stream=duration:format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 str(video_path),
             ],
             capture_output=True, text=True, timeout=30,
         )
-        return float(result.stdout.strip())
+        for line in result.stdout.split():
+            try:
+                value = float(line)
+            except ValueError:
+                continue
+            if math.isfinite(value) and value > 0:
+                return value
+        raise ValueError(f"no duration in ffprobe output {result.stdout.strip()!r}")
     except (ValueError, subprocess.TimeoutExpired, OSError) as e:
         logger.warning("Could not get duration for %s: %s", video_path, e)
         return None
@@ -52,7 +60,7 @@ def _extract_metadata(video_path: Path) -> dict | None:
                 FFPROBE, "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=duration,width,height,r_frame_rate",
-                "-show_entries", "format=size",
+                "-show_entries", "format=size,duration",
                 "-of", "json",
                 str(video_path),
             ],
@@ -68,8 +76,9 @@ def _extract_metadata(video_path: Path) -> dict | None:
         else:
             fps = round(float(fps_str), 2) if fps_str else 0
 
+        duration = stream.get("duration") or fmt.get("duration") or 0
         return {
-            "duration": float(stream.get("duration", 0)),
+            "duration": float(duration),
             "width": int(stream.get("width", 0)),
             "height": int(stream.get("height", 0)),
             "fps": fps,
@@ -140,17 +149,21 @@ def generate_tgp(video_path: Path, output_path: Path) -> bool:
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write beside the target and rename, so an interrupted run never leaves a truncated sheet.
+    partial = output_path.with_name(f".{output_path.stem}.partial.jpg")
     cmd = [FFMPEG] + inputs + [
         "-frames:v", "1", "-y",
         "-filter_complex", filter_complex,
         "-map", "[scaled]",
-        str(output_path),
+        str(partial),
     ]
 
     try:
         subprocess.run(cmd, capture_output=True, timeout=120, check=True)
+        partial.replace(output_path)
         return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        partial.unlink(missing_ok=True)
         logger.error("TGP generation failed for %s: %s", video_path, e)
         return False
 
@@ -249,10 +262,13 @@ def run_preprocessing(
     videos: list[Video],
     videos_path: str,
     cache: MetadataCache,
-    progress_callback: Callable[[str], None] | None = None,
-    fail_on_error: bool = False,
-) -> None:
-    """Run all preprocessing for videos. Called at startup."""
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> list[str]:
+    """Generate missing contact sheets, sprites and metadata (SPEC §3.2 step 5).
+
+    Failures for individual videos are logged and returned, never fatal: a video
+    without a contact sheet still appears, with the "No Contact Sheet" state.
+    """
     vpath = Path(videos_path)
     img_dir = vpath / "img"
     sprite_dir = vpath / "sprite"
@@ -260,36 +276,24 @@ def run_preprocessing(
     total = len(videos)
     failures: list[str] = []
     for idx, video in enumerate(videos):
+        if progress_callback:
+            progress_callback(idx, total, video.filename)
         video_file = vpath / video.filename
         if not video_file.exists():
             logger.warning("Video file not found, skipping: %s", video_file)
             continue
 
-        label = f"Processing {idx + 1}/{total}: {video.filename}"
-        logger.info(label)
-        if progress_callback:
-            progress_callback(label)
-
-        # TGP contact sheet
-        tgp_out = img_dir / f"{video.filename}.jpg"
-        if not generate_tgp(video_file, tgp_out):
-            failures.append(f"TGP failed: {video.filename}")
-
-        # Scrubbing sprite
+        if not generate_tgp(video_file, img_dir / f"{video.filename}.jpg"):
+            failures.append(f"Contact sheet failed: {video.filename}")
         if not generate_sprite(video_file, sprite_dir, video.filename):
             failures.append(f"Sprite failed: {video.filename}")
-
-        # Metadata
         if not cache.has(video.filename):
             meta = _extract_metadata(video_file)
             if meta:
                 cache.set(video.filename, meta)
 
     cache.save()
-    if progress_callback:
-        progress_callback("")
-    if fail_on_error and failures:
-        preview = ", ".join(failures[:5])
-        extra = "" if len(failures) <= 5 else f" (+{len(failures) - 5} more)"
-        raise RuntimeError(f"Preprocessing failed for {len(failures)} item(s): {preview}{extra}")
-    logger.info("Preprocessing complete for %d videos", total)
+    for failure in failures:
+        logger.warning(failure)
+    logger.info("Preprocessing complete for %d videos (%d failures)", total, len(failures))
+    return failures
