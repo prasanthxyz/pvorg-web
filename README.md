@@ -1,53 +1,38 @@
-# pvorg - Personal Video + Gallery Organizer
+# pvorg-web
 
-Local web application for browsing video + gallery combinations with a FastAPI backend and React frontend.
+The web app of pvorg: browse video + gallery combinations, filter them, and
+organize your library, from a local server in your browser.
+
+**What the app does and how it looks is specified in [docs/SPEC.md](docs/SPEC.md)**,
+shared unchanged with pvorg-native (macOS) and pvorg-android. This README
+covers only building, running and developing the web app.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `backend/` | FastAPI server: scans the library, generates previews, writes `pvorg.json`, serves the API, media and the built frontend |
+| `frontend/` | React + TypeScript single-page app (Vite) |
+| `qa/` | Playwright screenshot tour and end-to-end checks (dev only) |
+| `scripts/` | Command-line utilities and the fixture-library generator |
 
 ## Prerequisites
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/)
 - Node.js 20+
-- `ffmpeg` and `ffprobe`
+- `ffmpeg` and `ffprobe` on `PATH` (contact sheets, sprites, metadata)
 
-## Setup
-
-### Backend
+## Set up
 
 ```bash
 cd backend
 uv venv .venv
-uv pip install -r requirements.txt
-```
+uv pip install -r requirements-dev.txt   # or requirements.txt, without the test tools
 
-### Frontend
-
-```bash
-cd frontend
+cd ../frontend
 npm install
-npm run build
+npm run build                            # type-checks, then builds into frontend/dist
 ```
-
-### Config
-
-Create `~/pvorg.json`:
-
-```json
-{
-  "videosPath": "/path/to/videos",
-  "galleriesPath": "/path/to/galleries",
-  "tags": [],
-  "videoRelations": {}
-}
-```
-
-Video filenames must follow a strict lowercase format with no spaces:
-
-`studio-cast1[,cast2,...]-title.ext`
-
-Examples:
-
-- `unknown-unknown-party.time.mp4`
-- `studio-cast-title.mp4`
 
 ## Run
 
@@ -56,79 +41,59 @@ cd backend
 .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+Open <http://127.0.0.1:8000>. The server also serves the built frontend.
 
-## Development
+| Environment variable | Default | Purpose |
+|---|---|---|
+| `PVORG_CONFIG` | `~/pvorg.json` | The library's configuration file (SPEC §1.1) |
+| `PVORG_CACHE_DIR` | `~/.cache/pvorg-web` | Downsized thumbnails; safe to delete |
+| `PVORG_PORT` | `8000` | Port for `main.run()` and the Vite dev proxy target |
 
-Backend:
+## Develop
 
-```bash
-cd backend
-.venv/bin/uvicorn main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Frontend:
-
-```bash
-cd frontend
-npm run dev
-```
-
-Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
-
-## UI Pages
-
-- `/` Viewer
-- `/config` Filters/configuration
-- `/deleter` Video deleter
-- `/mapper` Video-gallery mapper
-- `/tag-mapper` Video-tag mapper
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `v` | Viewer page |
-| `c` | Config page |
-| `p` | Toggle TGP / Video |
-| `b` | Previous combination |
-| `n` | Next combination |
-| `Space` | Play / Pause (video mode) |
-| `0`-`9` | Seek to 0%-90% |
-| `Left` / `Right` | Seek -10s / +10s |
-
-## Utility Scripts
-
-All scripts default to `~/pvorg.json` and support `--config`.
+Run the backend with reload, and Vite for the frontend (it proxies `/api` to
+`PVORG_PORT`):
 
 ```bash
-# Validate video naming
-python scripts/validate_filenames.py
-
-# Remove orphan sprite/TGP assets
-python scripts/cleanup_orphans.py
-
-# Remove stale videoRelations from pvorg.json
-python scripts/cleanup_pvorg.py
-
-# Generate sprite sheets + VTT
-python scripts/generate_sprites.py
-
-# Generate TGP contact sheets
-python scripts/generate_tgp.py
-
-# Re-encode videos (creates .bak backups)
-python scripts/reencode_videos.py
+cd backend && .venv/bin/uvicorn main:app --reload --host 127.0.0.1 --port 8000
+cd frontend && npm run dev               # http://127.0.0.1:5173
 ```
 
-## Startup Behavior
+To work against a synthetic library instead of your own:
 
-On startup/reload, backend runs:
+```bash
+scripts/make-fixture.sh /tmp/pvorg-web-fixture
+cd backend && PVORG_CONFIG=/tmp/pvorg-web-fixture/pvorg.json .venv/bin/uvicorn main:app --port 8000
+```
 
-1. Filename scan/validation
-2. Config normalization
-3. Orphan cleanup
-4. Stale pvorg cleanup
-5. Preprocessing (TGP + sprite + metadata)
+## Verify
 
-If preprocessing fails, the backend process exits.
+```bash
+cd backend && .venv/bin/python -m pytest -W error   # data rules, incl. the native compatibility sequence
+cd frontend && npm run build                        # tsc -b + vite build
+cd qa && npm install && npm run tour                # screenshots + end-to-end checks
+```
+
+`npm run tour` needs a built frontend and the backend venv. It never touches
+`~/pvorg.json`: it builds a fixture template once (`/tmp/pvorg-web-template`),
+copies it to `/tmp/pvorg-web-run` for each run, starts the backend on port
+8765 against that copy, and writes screenshots of every page and state, in
+Light and Dark at 1440×900 and 390×844, to `/tmp/pvorg-web-tour`. It exits
+non-zero if a check fails or the browser logs any error or warning.
+
+Options: `--out DIR`, `--only desktop-dark` (one viewport and theme),
+`--no-e2e`. It uses Playwright's Chromium; if it isn't installed yet, run
+`npx playwright install chromium` in `qa/` once.
+
+## Utility scripts
+
+Each reads `$PVORG_CONFIG` (or `~/pvorg.json`), or `--config PATH`.
+
+```bash
+backend/.venv/bin/python scripts/validate_filenames.py   # report names that don't follow studio-cast-title
+backend/.venv/bin/python scripts/cleanup_orphans.py      # remove contact sheets and sprites with no video
+backend/.venv/bin/python scripts/cleanup_pvorg.py        # preview stale pvorg.json entries; --yes removes them
+backend/.venv/bin/python scripts/generate_tgp.py         # (re)generate contact sheets
+backend/.venv/bin/python scripts/generate_sprites.py     # (re)generate seek-preview sprites and VTT
+backend/.venv/bin/python scripts/reencode_videos.py      # re-encode to H.264 MP4 with fast start (keeps .bak backups)
+```
