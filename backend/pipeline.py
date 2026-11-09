@@ -9,19 +9,20 @@ from pathlib import Path
 from cache import MetadataCache
 from cleanup import cleanup_orphaned_assets
 from config import ConfigError, config_path, load_config, normalize_relations, save_config
-from preprocessor import run_preprocessing
+from preprocessor import SpriteCancelled, run_preprocessing
 from scanner import scan_galleries, scan_videos
-from sprites import SpriteWorker
+from sprites import FailureLog, default_failures_path
 from state import AppState, Startup
 
 logger = logging.getLogger(__name__)
 
 
 class Pipeline:
-    def __init__(self, state: AppState, *, preprocess: bool = True, sprites: SpriteWorker | None = None) -> None:
+    def __init__(self, state: AppState, *, preprocess: bool = True, sprite_failures_path: Path | None = None) -> None:
         self.state = state
         self.preprocess = preprocess
-        self.sprites = sprites or SpriteWorker()
+        self.sprite_failures_path = sprite_failures_path
+        self._stop = threading.Event()
         self._running = threading.Lock()
 
     def start(self) -> bool:
@@ -46,13 +47,13 @@ class Pipeline:
     def _step(self, title: str, detail: str | None = None, fraction: float | None = None) -> None:
         self.state.startup = Startup(phase="loading", step=title, detail=detail, fraction=fraction)
 
-    def shutdown(self) -> None:
-        """Stop background sprite work (and its ffmpeg) when the server stops."""
-        self.sprites.stop()
+    def shutdown(self, timeout: float = 5.0) -> None:
+        """When the server stops: cancel a run in progress, and wait so its ffmpeg is killed, not orphaned."""
+        self._stop.set()
+        if self._running.acquire(timeout=timeout):
+            self._running.release()
 
     def _run(self) -> None:
-        # A reload rescans everything; stop sprites for the old scan before touching the folders.
-        self.sprites.stop()
         try:
             self._step("Loading Configuration", str(config_path()))
             config = load_config()
@@ -75,15 +76,16 @@ class Pipeline:
                     self._step("Preparing Previews", f"{done + 1} of {total} · {filename}", done / max(total, 1))
 
                 run_preprocessing(videos, config.videosPath, MetadataCache(Path(config.videosPath) / "cache.json"),
-                                  progress)
+                                  progress,
+                                  sprite_failures=FailureLog(self.sprite_failures_path or default_failures_path()),
+                                  stop=self._stop)
 
             self.state.apply_library(config, galleries, videos, skipped, reset_filters=True)
             self.state.startup = Startup(phase="ready", step="Ready")
-            if self.preprocess:
-                # Seek-preview sprites are slow for long videos, so they come after the library opens.
-                self.sprites.start(config.videosPath, [v.filename for v in videos])
             logger.info("Library ready: %d videos, %d galleries, %d skipped", len(videos), len(galleries),
                         len(skipped))
+        except SpriteCancelled:
+            logger.info("Startup stopped: the server is shutting down")
         except ConfigError as e:
             logger.error("Startup failed: %s", e)
             self.state.startup = Startup(phase="error", step="Error", error=str(e))

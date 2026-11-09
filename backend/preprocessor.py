@@ -1,4 +1,4 @@
-"""Preview generation: contact sheets (TGP) and metadata at startup, seek-preview sprites in the background."""
+"""Startup preprocessing: contact sheets (TGP), seek-preview sprites and metadata."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from pathlib import Path
 from cache import MetadataCache
 from config import atomic_write_text
 from scanner import Video
+from sprites import FailureLog
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,9 @@ TGP_TILE_WIDTH = 480
 SPRITE_INTERVAL_SECONDS = 2
 SPRITE_COLS = 10
 SPRITE_TILE_WIDTH = 160
-# Generous, because sprites are background work; keyframe-only decoding rarely needs more than seconds.
-SPRITE_TIMEOUT_SECONDS = 600
+# Keyframe-only decoding rarely needs more than seconds; the margin covers slow or network drives.
+# A timeout is remembered as a failure, so it's paid once per file, not on every launch.
+SPRITE_TIMEOUT_SECONDS = 300
 
 
 def _get_video_duration(video_path: Path) -> float | None:
@@ -174,7 +176,7 @@ def generate_tgp(video_path: Path, output_path: Path) -> bool:
 
 
 class SpriteCancelled(Exception):
-    """Sprite generation was stopped because the library is reloading or the server is stopping."""
+    """Sprite generation was stopped because the server is stopping."""
 
 
 def generate_sprite(video_path: Path, sprite_dir: Path, video_name: str, *,
@@ -310,36 +312,70 @@ def run_preprocessing(
     videos_path: str,
     cache: MetadataCache,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    *,
+    sprite_failures: FailureLog | None = None,
+    stop: threading.Event | None = None,
 ) -> list[str]:
-    """Generate missing contact sheets and metadata (SPEC §3.2 step 5).
+    """Generate missing contact sheets, seek-preview sprites and metadata (SPEC §3.2 step 5).
 
-    Seek-preview sprites are not made here: they're slow for long videos, so the library opens
-    first and `sprites.SpriteWorker` makes them in the background.
-
-    Failures for individual videos are logged and returned, never fatal: a video
-    without a contact sheet still appears, with the "No Contact Sheet" state.
+    Failures for individual videos are logged and returned, never fatal: a video without a
+    contact sheet still appears, with the "No Contact Sheet" state, and one without a sprite has
+    no scrubber preview. A video whose sprite failed before is skipped until its file changes
+    (`sprite_failures`). Raises SpriteCancelled if `stop` is set while a sprite is being made.
     """
     vpath = Path(videos_path)
     img_dir = vpath / "img"
+    sprite_dir = vpath / "sprite"
+    can_make_sprites = bool(shutil.which(FFMPEG) and shutil.which(FFPROBE))
+
     total = len(videos)
     failures: list[str] = []
-    for idx, video in enumerate(videos):
-        if progress_callback:
-            progress_callback(idx, total, video.filename)
-        video_file = vpath / video.filename
-        if not video_file.exists():
-            logger.warning("Video file not found, skipping: %s", video_file)
-            continue
+    try:
+        for idx, video in enumerate(videos):
+            if progress_callback:
+                progress_callback(idx, total, video.filename)
+            video_file = vpath / video.filename
+            if not video_file.exists():
+                logger.warning("Video file not found, skipping: %s", video_file)
+                continue
 
-        if not generate_tgp(video_file, img_dir / f"{video.filename}.jpg"):
-            failures.append(f"Contact sheet failed: {video.filename}")
-        if not cache.has(video.filename):
-            meta = _extract_metadata(video_file)
-            if meta:
-                cache.set(video.filename, meta)
+            if not generate_tgp(video_file, img_dir / f"{video.filename}.jpg"):
+                failures.append(f"Contact sheet failed: {video.filename}")
+            if can_make_sprites:
+                _prepare_sprite(video_file, sprite_dir, video.filename, failures, sprite_failures, stop)
+            if not cache.has(video.filename):
+                meta = _extract_metadata(video_file)
+                if meta:
+                    cache.set(video.filename, meta)
+    finally:
+        cache.save()
+        if sprite_failures is not None:
+            sprite_failures.save()
 
-    cache.save()
     for failure in failures:
         logger.warning(failure)
     logger.info("Preprocessing complete for %d videos (%d failures)", total, len(failures))
     return failures
+
+
+def _prepare_sprite(video_file: Path, sprite_dir: Path, filename: str, failures: list[str],
+                    known_failures: FailureLog | None, stop: threading.Event | None) -> None:
+    if (sprite_dir / f"{filename}_sprite.jpg").is_file() and (sprite_dir / f"{filename}_sprite.vtt").is_file():
+        return
+    if known_failures is not None and known_failures.known(video_file):
+        logger.debug("Skipping sprite for %s: it failed before and the file hasn't changed", filename)
+        return
+    try:
+        ok = generate_sprite(video_file, sprite_dir, filename, stop=stop)
+    except OSError as e:
+        # ffmpeg couldn't be started: a problem with the tools, not with this video.
+        failures.append(f"Sprite failed: {filename}: {e}")
+        return
+    if ok:
+        if known_failures is not None:
+            known_failures.forget(video_file)
+    else:
+        failures.append(f"Sprite failed: {filename}")
+        if known_failures is not None:
+            known_failures.remember(video_file)
+            known_failures.save()
