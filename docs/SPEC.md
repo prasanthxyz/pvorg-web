@@ -6,7 +6,7 @@
 > in one repository and copy it to the other two in the same change. The
 > version line below identifies the copy.
 >
-> **Version 1.0 · 2026-11-09**
+> **Version 1.1 · 2026-11-09**
 
 pvorg (Personal Video + Gallery Organizer) is a single-user tool for browsing
 a personal library of videos paired with image galleries. It shows one
@@ -47,9 +47,10 @@ configuration file, `pvorg.json`.
 | Web | Same as macOS, read and written by the server | `videosPath` | `galleriesPath` |
 | Android | `pvorg.json` in a root folder the user picks (Storage Access Framework) | `<root>/VID` | `<root>/GAL` |
 
-Android ignores `videosPath` and `galleriesPath`, so one library folder can be
-copied between a computer and a tablet unchanged. Everything else in this
-section is identical on all platforms.
+On Android, `videosPath` and `galleriesPath` are optional and ignored, so one
+library folder can be copied between a computer and a tablet unchanged.
+`VID/img` may be absent; every video then shows the No Contact Sheet state.
+Everything else in this section is identical on all platforms.
 
 ### 1.2 `pvorg.json`
 
@@ -71,8 +72,8 @@ section is identical on all platforms.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `videosPath` | string, required | Folder of video files (desktop platforms). |
-| `galleriesPath` | string, required | Folder whose subfolders are galleries (desktop platforms). |
+| `videosPath` | string, required on desktop | Folder of video files. Optional and ignored on Android. |
+| `galleriesPath` | string, required on desktop | Folder whose subfolders are galleries. Optional and ignored on Android. |
 | `tags` | string array, required | The tag vocabulary for filtering and Tag Mapping. |
 | `videoRelations` | object, required | Per-video decisions, keyed by the exact video filename. |
 
@@ -257,18 +258,26 @@ should never be paired with this video:
   exists.
 - **Undo** restores the previous decision exactly (Yes or Undecided). If the
   exclusion created the video's entry and nothing else has been decided for
-  it since, undo removes the entry again, leaving the file as it was. If the
+  it since, undo removes the entry again, so `pvorg.json` returns to the same
+  content (formatting is always the canonical format of §1.2). If the
   current filters still allow the pairing, undo puts it back at its old
   position and shows it.
+- **Feedback.** Undoing by any route replaces the Exclude message with a brief
+  "Restored "Gallery" for "Title"" confirmation, so a stale Undo never lingers.
+  Redo shows the Exclude message again.
 
 ### 3.7 Deleting videos
 
 Deletion is **permanent** (not moved to the trash) and always confirmed. For
 each selected video it removes the video file, its contact sheet (and, on Web,
 its sprite files), its `videoRelations` entry and its `cache.json` entry. Only
-filenames from the scanned library are accepted. Partial failures are
-reported with the files that failed. Afterwards the library is rescanned and
-filters reset.
+filenames from the scanned library are accepted. Afterwards the library is
+rescanned and filters reset.
+
+- If a video file can't be deleted, its relation and cache entry are **kept**
+  (the video is still there) and the failure is listed.
+- A missing contact sheet is not an error. One that can't be removed is listed
+  and is cleaned up as an orphan at the next startup.
 
 ### 3.8 Library selection
 
@@ -505,7 +514,10 @@ offending key or path. Where pvorg looks for its configuration. **Try Again**
 Rules:
 
 - **Typing always wins.** While a text field has focus, every key goes to
-  the field, including the single-key shortcuts above.
+  the field, including the single-key shortcuts above. Esc in a search field
+  follows the platform convention: it clears the field on macOS, and leaves
+  the field while keeping its query on Android and the Web. Clicking or
+  tapping elsewhere also leaves it, after which the shortcuts work again.
 - **Scoped keys.** Viewer keys act only while the viewer is showing, and
   playback keys only in video mode. Elsewhere, arrows and Space keep their
   usual behavior.
@@ -680,6 +692,8 @@ decision changes.
 | Named startup steps with determinate progress; recoverable error screen with Try Again. | The old loading screen showed "0 videos" throughout, and errors needed a relaunch. |
 | Reload Library and Clean Up Stale Entries as commands; the risky cleanup can't be confirmed with Return. | Reload had no UI; a disconnected drive could wipe every mapping. |
 | Dark stage in every appearance; Dark remains the default appearance. | Media reads true, and the original app was dark-only. |
+| Undoing by any route replaces the Exclude message with "Restored …". | After ⌘Z or a keyboard undo, the old message's Undo lingered and did nothing. |
+| A video whose file can't be deleted keeps its decisions and cached metadata. | Removing them while the file stays would silently lose work. |
 | One shared spec for three apps. | One product, one source of truth; platform sections record the honest differences. |
 
 ---
@@ -707,7 +721,8 @@ decision changes.
   unplayable state with **Open in Default App**.
 - **Previews.** Generates contact sheets and metadata with ffmpeg and
   ffprobe. Scrubber frames come from AVAssetImageGenerator.
-- **Verification.**
+- **Verification.** Requires a full Xcode installation; the Command Line Tools
+  alone can't compile the asset catalog or SwiftUI's macros, or run tests.
   - Unit tests: `swift test`.
   - `Scripts/make_ui_fixture.sh` builds a synthetic library.
   - A debug-only UI tour (`PVORG_UI_TOUR=<dir>`) captures every page and state
@@ -731,8 +746,12 @@ decision changes.
   - Appearance follows `prefers-color-scheme` when set to System.
   - Shortcuts use Ctrl on non-Mac systems.
   - Undo works through the toast and Ctrl/⌘+Z.
-- **Playback.** Browser codecs: mp4 (H.264) and webm play; mkv, avi and wmv
-  usually don't, and show the unplayable state.
+- **Playback.** Browser codecs: mp4 (H.264) and webm play; avi and wmv don't;
+  mkv depends on the browser and codec (Chromium often plays H.264 mkv).
+  Unplayable files show the unplayable state.
+- **Web stand-ins.** "Open in Default App" becomes Download Video and Open
+  Video in New Tab; reveal-in-Finder actions become Copy Path. Reload Library
+  lives in the More menu, because the browser owns ⌘R / Ctrl+R.
 - **Previews.** Seek previews use the server-generated sprite sheet and VTT,
   with a fallback when they're missing.
 - **Configuration.** `~/pvorg.json` or `PVORG_CONFIG`, read on the server.
@@ -756,7 +775,7 @@ decision changes.
   contact sheets and metadata made on a computer. Videos without a contact
   sheet still appear, with the No Contact Sheet state.
 - Writes to `pvorg.json` follow §1.2: atomic where the provider allows,
-  otherwise a full rewrite of the document.
+  otherwise a full rewrite of the document (Storage Access Framework).
 
 ### 15.2 Structure
 
@@ -796,12 +815,12 @@ Status of each app against this spec at the version above. ✓ conforms,
 
 | Area | macOS | Web | Android |
 |---|---|---|---|
-| §1–3 data rules (tags opt-in, mapping saves, Exclude Pairing + undo, deletion, stale cleanup) | ✓ | in progress | in progress |
-| §4 navigation and page names | ✓ | in progress | in progress |
-| §5 viewer, all states | ✓ | in progress | in progress |
-| §6 Filters, Library, Mapping, Cleanup, Settings | ✓ | in progress | in progress |
-| §7 commands and keyboard rules | ✓ | in progress | in progress |
-| §8–11 design, accessibility, performance | ✓ | in progress | in progress |
+| §1–3 data rules (tags opt-in, mapping saves, Exclude Pairing + undo, deletion, stale cleanup) | ◐ v1.1 changes (undo feedback, failed-delete rule) written but not yet built: Xcode unavailable | ✓ | ✓ |
+| §4 navigation and page names | ✓ | ✓ | ✓ |
+| §5 viewer, all states | ✓ | ✓ | ✓ |
+| §6 Filters, Library, Mapping, Cleanup, Settings | ✓ | ✓ | ✓ |
+| §7 commands and keyboard rules | ✓ | ✓ | ✓ |
+| §8–11 design, accessibility, performance | ✓ | ◐ no automated contrast audit | ◐ no TalkBack or large-font pass yet |
 | Preview generation (§3.2 step 5) | ✓ | ✓ | — (by design, §15.1) |
 
 ## 17. Maintaining this spec
