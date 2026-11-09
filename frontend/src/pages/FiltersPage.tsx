@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { FilterItem, FilterKey, FiltersState } from "../api/types";
-import { counted, matches } from "../app/format";
+import { counted, matches, setPageTitle } from "../app/format";
 import { Button, IconButton, SearchField } from "../components/controls";
 import { PageHeader } from "../components/feedback";
 import { Icon } from "../components/Icon";
@@ -43,7 +43,7 @@ export default function FiltersPage() {
   const [query, setQuery] = useState("");
 
   useEffect(() => {
-    document.title = "Filters – pvorg";
+    setPageTitle("Filters");
     let cancelled = false;
     api.filters().then((f) => !cancelled && setFilters(f)).catch((e) => showError("Couldn’t Load Filters", e));
     return () => {

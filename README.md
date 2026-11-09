@@ -1,6 +1,6 @@
 # pvorg-web
 
-The web app of pvorg: browse video + gallery combinations, filter them, and
+The web app of PP Video Organizer: browse video + gallery combinations, filter them, and
 organize your library, from a local server in your browser.
 
 **What the app does and how it looks is specified in [docs/SPEC.md](docs/SPEC.md)**,

@@ -199,6 +199,12 @@ const paths: Record<string, React.ReactNode> = {
       <path d="M14 3.5v5h5M9.5 13.5l5 5M14.5 13.5l-5 5" />
     </>
   ),
+  sidebarLeft: (
+    <>
+      <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+      <path d="M9 4.5v15" />
+    </>
+  ),
   sidebarRight: (
     <>
       <rect x="3" y="4.5" width="18" height="15" rx="2.5" />

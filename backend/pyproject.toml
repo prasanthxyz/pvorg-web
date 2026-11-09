@@ -1,7 +1,7 @@
 [project]
 name = "pvorg-backend"
 version = "1.0.0"
-description = "pvorg - personal video + gallery organizer backend"
+description = "Backend server of PP Video Organizer, the personal video + gallery organizer"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",

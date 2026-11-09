@@ -10,7 +10,8 @@
  *   2. copies it to /tmp/pvorg-web-run and starts the backend on port 8765 with
  *      PVORG_CONFIG / PVORG_CACHE_DIR pointing there,
  *   3. screenshots every page and state in Light and Dark at 1440×900 and 390×844,
- *   4. runs the end-to-end checks, and fails on any console error or warning.
+ *   4. runs the end-to-end checks (including hiding the sidebar), and fails on any console
+ *      error or warning.
  *
  * Requires a built frontend (cd frontend && npm run build) and the backend venv.
  */
@@ -318,6 +319,36 @@ async function tour(browser, viewport, theme) {
     await page.keyboard.press("Escape");
   }
 
+  if (desktop) {
+    // Sidebar hidden (SPEC §4.1): the page takes the whole window.
+    await gotoCombination((c) => c.video.filename === "acme-jane_doe-harbor_lights.mp4");
+    await open(page, "/");
+    await page.getByRole("button", { name: "Hide Sidebar" }).click();
+    await page.waitForTimeout(400);
+    await page.mouse.move(5, 300);
+    await shot("sidebar-hidden-viewer");
+    await page.keyboard.press("p");
+    await page.locator("video").waitFor();
+    await page.waitForFunction(() => (document.querySelector("video")?.readyState ?? 0) >= 2);
+    await page.keyboard.press("4");
+    await page.evaluate(() => document.querySelector("video")?.pause());
+    await page.waitForTimeout(300);
+    await shot("sidebar-hidden-viewer-video");
+    await open(page, "/library");
+    await shot("sidebar-hidden-library");
+    await open(page, "/mapping/galleries");
+    await page.getByRole("radio", { name: "All" }).check({ force: true });
+    await page.locator(".matrix__cell-button").nth(0).click();
+    await page.locator(".matrix__cell-button").nth(21).click();
+    await page.mouse.move(5, 300);
+    await page.waitForTimeout(150);
+    await shot("sidebar-hidden-mapping-pending");
+    await page.getByRole("button", { name: "Revert" }).click();
+    await page.getByRole("button", { name: "Discard Changes" }).click();
+    await page.getByRole("button", { name: "Show Sidebar" }).click();
+    await page.waitForTimeout(400);
+  }
+
   await page.goto(`${BASE}/nowhere`);
   await page.getByText("Page Not Found").waitFor();
   await shot("not-found");
@@ -469,6 +500,163 @@ async function e2e(browser) {
   await page.context().close();
 }
 
+// ---------------------------------------------------------------- hiding the sidebar
+
+async function sidebarChecks(browser) {
+  console.log("Sidebar checks");
+  const page = await newPage(browser, "desktop", "dark");
+  await api("/api/filters/reset", {});
+  await open(page, "/");
+  const mac = await page.evaluate(() =>
+    /mac/i.test(navigator.userAgentData?.platform ?? navigator.platform));
+  const shortcut = mac ? "Control+Meta+s" : "Control+Backslash";
+  const toggle = page.locator("#sidebar-toggle");
+  const geometry = () => page.evaluate(() => {
+    const sidebar = document.querySelector(".sidebar").getBoundingClientRect();
+    return {
+      sidebarRight: Math.round(sidebar.right),
+      mainLeft: Math.round(document.querySelector(".main").getBoundingClientRect().left),
+      stage: Math.round(document.querySelector(".stage")?.getBoundingClientRect().width ?? 0),
+      visibility: getComputedStyle(document.querySelector(".sidebar")).visibility,
+      stored: localStorage.getItem("pvorg.sidebar"),
+    };
+  });
+  const settled = () => page.waitForTimeout(350);
+
+  const shown = await geometry();
+  check("the sidebar is shown by default", shown.mainLeft >= 240 && shown.visibility === "visible", JSON.stringify(shown));
+  check("the toggle leads the page header",
+    await page.evaluate(() => document.querySelector(".page-header")?.firstElementChild?.id === "sidebar-toggle"));
+  check("the toggle is labeled Hide Sidebar, expanded, and controls the sidebar",
+    (await toggle.getAttribute("aria-label")) === "Hide Sidebar" && (await toggle.getAttribute("aria-expanded")) === "true"
+      && (await toggle.getAttribute("aria-controls")) === "sidebar" && (await page.locator("#sidebar").count()) === 1);
+  check("the toggle's tooltip names the shortcut", (await toggle.getAttribute("title")) === `Hide Sidebar (${mac ? "⌃⌘S" : "Ctrl+\\"})`);
+  check("the sidebar animates over about 0.2 s",
+    await page.evaluate(() => getComputedStyle(document.querySelector(".shell")).transitionDuration === "0.2s"));
+
+  // The video element survives hiding and showing (no re-mount, playback position kept).
+  await page.keyboard.press("p");
+  await page.locator("video").waitFor();
+  await page.waitForFunction(() => (document.querySelector("video")?.readyState ?? 0) >= 2);
+  await page.evaluate(() => {
+    const video = document.querySelector("video");
+    video.pause();
+    video.currentTime = 3;
+    video.dataset.probe = "same";
+  });
+  await page.waitForFunction(() => Math.abs(document.querySelector("video").currentTime - 3) < 0.2);
+  await toggle.click();
+  await settled();
+  const hidden = await geometry();
+  check("Hide Sidebar gives the page the whole window",
+    hidden.mainLeft === 0 && hidden.sidebarRight <= 0 && hidden.visibility === "hidden", JSON.stringify(hidden));
+  check("the viewer stage grows into the freed width", hidden.stage >= shown.stage + 180, `${shown.stage} → ${hidden.stage}`);
+  check("the toggle then reads Show Sidebar, collapsed",
+    (await toggle.getAttribute("aria-label")) === "Show Sidebar" && (await toggle.getAttribute("aria-expanded")) === "false");
+  check("the hidden sidebar is inert", await page.evaluate(() => document.querySelector("#sidebar").inert === true));
+  check("hiding keeps the same video element and position", await page.evaluate(() => {
+    const video = document.querySelector("video");
+    return video?.dataset.probe === "same" && Math.abs(video.currentTime - 3) < 0.2;
+  }));
+  await page.keyboard.press("p");
+
+  await page.reload();
+  await page.locator("#page-title").waitFor();
+  check("the hidden sidebar survives a reload",
+    (await geometry()).mainLeft === 0 && (await toggle.getAttribute("aria-label")) === "Show Sidebar");
+
+  await page.locator("#page-title").click();
+  await page.keyboard.press(shortcut);
+  await settled();
+  check(`${mac ? "⌃⌘S" : "Ctrl+\\"} shows the sidebar`, (await geometry()).mainLeft >= 240);
+  await page.keyboard.press(shortcut);
+  await settled();
+  check(`${mac ? "⌃⌘S" : "Ctrl+\\"} hides it again`, (await geometry()).mainLeft === 0);
+  check("the choice is stored in local storage", (await geometry()).stored === "hidden");
+  await page.keyboard.press(shortcut);
+  await settled();
+
+  // The shortcut works while typing (it's a modified key) and leaves the field's text alone.
+  await open(page, "/library");
+  const search = page.getByRole("searchbox", { name: "Search videos" });
+  await search.click();
+  await search.fill("ja");
+  await page.keyboard.press(shortcut);
+  await settled();
+  check("the shortcut works while typing in a search field",
+    (await geometry()).mainLeft === 0 && (await search.inputValue()) === "ja");
+  await page.keyboard.press(shortcut);
+  await settled();
+  await search.fill("");
+
+  // Focus inside the sidebar moves to the toggle when the sidebar hides.
+  await page.getByRole("link", { name: "Filters" }).focus();
+  await page.keyboard.press(shortcut);
+  await settled();
+  check("hiding with focus in the sidebar moves focus to the toggle",
+    await page.evaluate(() => document.activeElement?.id === "sidebar-toggle"));
+  await page.keyboard.press("Enter");
+  await settled();
+  check("Enter on the focused toggle shows the sidebar again", (await geometry()).mainLeft >= 240);
+
+  // The More menu offers Hide Sidebar too.
+  await page.getByRole("button", { name: "More" }).click();
+  const item = page.getByRole("menuitem", { name: /Hide Sidebar/ });
+  check("the More menu has Hide Sidebar", (await item.count()) === 1);
+  await item.click();
+  await settled();
+  check("Hide Sidebar from the More menu hides it and focuses the toggle",
+    (await geometry()).mainLeft === 0 && await page.evaluate(() => document.activeElement?.id === "sidebar-toggle"));
+
+  // Unsaved mapping changes put a dot on Show Sidebar.
+  await open(page, "/mapping/tags");
+  check("no dot without unsaved changes", (await page.locator(".sidebar-toggle__dot").count()) === 0);
+  await page.getByRole("radio", { name: "All" }).check({ force: true });
+  await page.locator(".matrix__cell-button").first().click();
+  check("unsaved mapping changes put a dot on Show Sidebar",
+    (await page.locator(".sidebar-toggle__dot").count()) === 1
+      && (await toggle.getAttribute("aria-label")) === "Show Sidebar, unsaved mapping changes");
+  await open(page, "/");
+  check("the dot shows on every page", (await page.locator(".sidebar-toggle__dot").count()) === 1);
+  await toggle.click();
+  await settled();
+  check("no dot while the sidebar (and its badge) shows",
+    (await page.locator(".sidebar-toggle__dot").count()) === 0 && (await page.locator(".sidebar .nav__badge").count()) === 1);
+  await open(page, "/mapping/tags");
+  await page.getByRole("button", { name: "Revert" }).click();
+  await page.getByRole("button", { name: "Discard Changes" }).click();
+
+  // Reduced motion: hiding is instant.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await toggle.click();
+  const instant = await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() =>
+    resolve(Math.round(document.querySelector(".main").getBoundingClientRect().left)))));
+  check("with reduced motion the sidebar hides instantly", instant === 0, `main at ${instant}px`);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+
+  // Narrow screens keep the drawer; the hidden setting doesn't apply.
+  await page.setViewportSize(VIEWPORTS.narrow);
+  await open(page, "/library");
+  check("narrow: no sidebar toggle", !(await toggle.isVisible()));
+  check("narrow: the top bar and menu button still show",
+    await page.getByRole("button", { name: "Open navigation" }).isVisible());
+  await page.locator("#page-title").click();
+  await page.keyboard.press(shortcut);
+  check("narrow: the shortcut leaves the setting alone", (await geometry()).stored === "hidden");
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await page.locator("dialog.drawer[open]").waitFor();
+  check("narrow: the drawer lists the pages", await page.locator("dialog.drawer").getByRole("link", { name: "Library" }).isVisible());
+  await page.locator("dialog.drawer").getByRole("button", { name: "More" }).click();
+  check("narrow: the drawer's More menu has no Hide Sidebar",
+    (await page.getByRole("menuitem", { name: /Sidebar/ }).count()) === 0);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await page.setViewportSize(VIEWPORTS.desktop);
+  await page.waitForTimeout(200);
+  check("back at desktop width, the sidebar is still hidden", (await geometry()).mainLeft === 0);
+  await page.context().close();
+}
+
 // ---------------------------------------------------------------- startup states
 
 async function startupStates(browser) {
@@ -532,7 +720,10 @@ async function main() {
       }
     }
     await startupStates(browser);
-    if (E2E) await e2e(browser);
+    if (E2E) {
+      await e2e(browser);
+      await sidebarChecks(browser);
+    }
   } catch (error) {
     await lastPage?.screenshot({ path: join(OUT, "failure.png") }).catch(() => undefined);
     console.error(consoleProblems.join("\n"));

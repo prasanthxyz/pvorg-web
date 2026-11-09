@@ -9,6 +9,7 @@ import { PreviewHost } from "../components/Preview";
 import { hasAnyPending } from "../state/mapping";
 import { connectionError, pollStatus, status } from "../state/status";
 import { useStore } from "../state/store";
+import { APP_NAME, setPageTitle } from "./format";
 import { installShortcuts } from "./shortcuts";
 import { Shell } from "./Shell";
 import { StartupError, StartupProgress } from "./Startup";
@@ -21,9 +22,10 @@ const SettingsPage = lazy(() => import("../pages/SettingsPage"));
 
 function NotFound() {
   const navigate = useNavigate();
+  useEffect(() => setPageTitle("Page Not Found"), []);
   return (
     <EmptyState icon="viewer" title="Page Not Found" actions={<Button onClick={() => navigate("/")}>Open Viewer</Button>}>
-      This address isn’t part of pvorg.
+      This address isn’t part of {APP_NAME}.
     </EmptyState>
   );
 }

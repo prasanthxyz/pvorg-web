@@ -5,9 +5,10 @@ import { IconButton } from "../components/controls";
 import { Icon, type IconName } from "../components/Icon";
 import { openMenuFrom } from "../components/Menu";
 import { changeCount, mappingSessions } from "../state/mapping";
+import { SIDEBAR_ID, setSidebarHidden, sidebarHidden, sidebarShortcut } from "../state/sidebar";
 import { reloadLibrary, status } from "../state/status";
 import { useStore } from "../state/store";
-import { counted } from "./format";
+import { APP_NAME, counted } from "./format";
 
 interface NavItem {
   to: string;
@@ -39,7 +40,9 @@ function useNavGroups(): { label: string; items: NavItem[] }[] {
   ];
 }
 
+/** The sidebar's contents; in the narrow-screen drawer, `onNavigate` closes the drawer. */
 function Navigation({ onNavigate }: { onNavigate?: () => void }) {
+  const inDrawer = !!onNavigate;
   const groups = useNavGroups();
   const library = useStore(status)?.library;
 
@@ -47,7 +50,7 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
     <>
       <div className="nav__brand">
         <Icon name="clapper" size={20} />
-        <span>pvorg</span>
+        <span className="nav__brand-name">{APP_NAME}</span>
       </div>
       <nav className="nav__groups" aria-label="Pages">
         {groups.map((group) => (
@@ -98,9 +101,17 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
             label="More"
             onClick={(e) => {
               onNavigate?.();
-              openMenuFrom(e.currentTarget, "Library actions", [
+              openMenuFrom(e.currentTarget, "More actions", [
                 { label: "Reload Library", icon: "refresh", onSelect: () => void reloadLibrary() },
                 { label: "Clean Up Stale Entries…", icon: "cleanup", onSelect: openCleanup },
+                // The menu lives in the sidebar, so it only ever offers to hide it; the drawer can't be hidden.
+                ...(inDrawer
+                  ? []
+                  : [
+                      { separator: true as const },
+                      { label: "Hide Sidebar", icon: "sidebarLeft" as const, shortcut: sidebarShortcut(),
+                        onSelect: () => setSidebarHidden(true) },
+                    ]),
               ]);
             }}
           />
@@ -114,6 +125,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawer = useRef<HTMLDialogElement>(null);
   const location = useLocation();
+  const hidden = useStore(sidebarHidden);
 
   useEffect(() => {
     if (drawerOpen) drawer.current?.showModal();
@@ -123,17 +135,18 @@ export function Shell({ children }: { children: ReactNode }) {
   useEffect(() => setDrawerOpen(false), [location.pathname]);
 
   return (
-    <div className="shell">
+    <div className="shell" data-sidebar={hidden ? "hidden" : "shown"}>
       <a className="skip-link" href="#main">
         Skip to content
       </a>
-      <aside className="sidebar" aria-label="Sidebar">
+      {/* Hidden: slides away, then leaves the tab order and accessibility tree (SPEC §4.1). */}
+      <aside id={SIDEBAR_ID} className="sidebar" aria-label="Sidebar" inert={hidden}>
         <Navigation />
       </aside>
       <header className="topbar">
         <IconButton icon="menu" label="Open navigation" onClick={() => setDrawerOpen(true)} />
         <span className="topbar__brand">
-          <Icon name="clapper" size={18} /> pvorg
+          <Icon name="clapper" size={18} /> {APP_NAME}
         </span>
       </header>
       <dialog

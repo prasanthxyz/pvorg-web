@@ -1,3 +1,11 @@
+/** The app's name wherever the user sees it (SPEC §4.2); `pvorg` stays the technical name. */
+export const APP_NAME = "PP Video Organizer";
+
+/** Browser tab title: "Filters – PP Video Organizer". */
+export function setPageTitle(page: string): void {
+  document.title = `${page} – ${APP_NAME}`;
+}
+
 /** "1 video", "3 videos" with locale number formatting (SPEC §2). */
 export function counted(count: number, singular: string, plural = `${singular}s`): string {
   return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;

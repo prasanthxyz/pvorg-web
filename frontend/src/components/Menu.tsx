@@ -4,7 +4,7 @@ import { createStore, useStore } from "../state/store";
 import { Icon, type IconName } from "./Icon";
 
 export type MenuEntry =
-  | { label: string; onSelect: () => void; icon?: IconName; destructive?: boolean; disabled?: boolean }
+  | { label: string; onSelect: () => void; icon?: IconName; shortcut?: string; destructive?: boolean; disabled?: boolean }
   | { heading: string }
   | { separator: true };
 
@@ -131,6 +131,11 @@ export function MenuHost() {
           >
             {entry.icon ? <Icon name={entry.icon} size={16} /> : <span className="menu__spacer" />}
             {entry.label}
+            {entry.shortcut && (
+              <kbd className="menu__shortcut" aria-hidden="true">
+                {entry.shortcut}
+              </kbd>
+            )}
           </button>
         );
       })}

@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { Settings } from "../api/types";
 import { Button, IconButton, Kbd, Segmented } from "../components/controls";
+import { setPageTitle } from "../app/format";
 import { PageHeader } from "../components/feedback";
 import { openCleanup } from "../components/CleanupDialog";
 import { appearance, setAppearance, type Appearance } from "../state/appearance";
 import { dataVersion, showError, showToast } from "../state/feedback";
+import { sidebarShortcut } from "../state/sidebar";
 import { commandKey, reloadLibrary } from "../state/status";
 import { useStore } from "../state/store";
 
@@ -15,7 +17,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
 
   useEffect(() => {
-    document.title = "Settings – pvorg";
+    setPageTitle("Settings");
     let cancelled = false;
     api.settings().then((s) => !cancelled && setSettings(s)).catch((e) => showError("Couldn’t Load Settings", e));
     return () => {
@@ -27,6 +29,7 @@ export default function SettingsPage() {
   const shortcuts: [string, string[]][] = [
     ["Go to Viewer", ["V"]],
     ["Go to Filters", ["C"]],
+    ["Hide / show sidebar", [sidebarShortcut()]],
     ["Contact sheet / video", ["P"]],
     ["Previous / next combination", ["B", "N"]],
     ["Exclude Pairing", ["⌫"]],
@@ -82,7 +85,7 @@ export default function SettingsPage() {
 
           <section className="settings-group" aria-labelledby="settings-keys">
             <h2 id="settings-keys" className="settings-group__title">Keyboard Shortcuts</h2>
-            <p className="settings-group__note">Shortcuts pause while you type in a search field.</p>
+            <p className="settings-group__note">Single-key shortcuts pause while you type in a search field.</p>
             <dl className="shortcut-list">
               {shortcuts.map(([action, keys]) => (
                 <div key={action} className="shortcut-list__row">

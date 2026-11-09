@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { LibraryState, VideoSummary } from "../api/types";
-import { counted, humanize, joinNames, matches } from "../app/format";
+import { counted, humanize, joinNames, matches, setPageTitle } from "../app/format";
 import { usePageShortcuts } from "../app/shortcuts";
 import { useScrollBox, visibleRange } from "../app/virtual";
 import { Button, SearchField } from "../components/controls";
@@ -37,7 +37,7 @@ export default function LibraryPage() {
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    document.title = "Library – pvorg";
+    setPageTitle("Library");
     let cancelled = false;
     api.library().then((l) => !cancelled && setLibrary(l)).catch((e) => showError("Couldn’t Load the Library", e));
     return () => {

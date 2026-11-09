@@ -703,6 +703,20 @@ code {
   flex: none;
 }
 
+.menu__shortcut {
+  margin-left: auto;
+  padding-left: var(--space-5);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+
+.menu__item:hover:not(:disabled) .menu__shortcut,
+.menu__item:focus-visible .menu__shortcut {
+  color: inherit;
+  opacity: 0.8;
+}
+
 .menu__separator {
   height: 1px;
   margin: var(--space-1) var(--space-2);

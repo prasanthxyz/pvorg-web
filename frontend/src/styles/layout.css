@@ -56,7 +56,15 @@
 }
 
 .nav__brand .icon {
+  flex: none;
   color: var(--accent-text);
+}
+
+.nav__brand-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav__groups {
@@ -172,6 +180,46 @@
   color: var(--accent-text);
 }
 
+/* ---------- Hiding the sidebar (wide screens, SPEC §4.1, §8.5) ---------- */
+
+/*
+ * The column collapses while the sidebar, at its full width, slides out by the same amount, so the
+ * sidebar's contents never reflow and the page grows with its edge. Only the grid track animates:
+ * the page re-lays out each frame (its video and images just resize), and nothing re-mounts.
+ */
+@media (min-width: 900px) {
+  .shell {
+    transition: grid-template-columns var(--duration-sidebar) var(--ease-out);
+  }
+
+  .sidebar {
+    width: var(--sidebar-width);
+    transition:
+      transform var(--duration-sidebar) var(--ease-out),
+      visibility 0s;
+  }
+
+  .shell[data-sidebar="hidden"] {
+    grid-template-columns: 0px minmax(0, 1fr);
+  }
+
+  .shell[data-sidebar="hidden"] .sidebar {
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition:
+      transform var(--duration-sidebar) var(--ease-out),
+      visibility 0s linear var(--duration-sidebar);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell,
+  .shell .sidebar,
+  .shell[data-sidebar="hidden"] .sidebar {
+    transition: none;
+  }
+}
+
 /* ---------- Drawer (narrow) ---------- */
 
 .drawer {
@@ -245,6 +293,7 @@
   }
 
   .topbar__brand .icon {
+    flex: none;
     color: var(--accent-text);
   }
 }
@@ -266,6 +315,28 @@
 .page-header__text {
   flex: 1 1 200px;
   min-width: 0;
+}
+
+/* Hide / Show Sidebar sits at the leading edge, a little closer to the title than the actions are. */
+.sidebar-toggle {
+  position: relative;
+  margin-left: calc(-1 * var(--space-2));
+}
+
+.sidebar-toggle + .page-header__text {
+  margin-left: calc(var(--space-2) - var(--space-4));
+}
+
+/* Stands in for the hidden mapping badges (SPEC §4.1). */
+.sidebar-toggle__dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pending);
+  box-shadow: 0 0 0 2px var(--bg);
 }
 
 .page-header__title {
@@ -304,6 +375,15 @@
 @media (max-width: 899px) {
   .page-header {
     padding: var(--space-3) var(--space-4);
+  }
+
+  /* The drawer replaces the sidebar here, and the setting doesn't apply (SPEC §4.1). */
+  .sidebar-toggle {
+    display: none;
+  }
+
+  .sidebar-toggle + .page-header__text {
+    margin-left: 0;
   }
 
   .page-header__actions {

@@ -1,12 +1,14 @@
 import { useEffect, useRef } from "react";
 import { isMenuOpen } from "../components/Menu";
 import { redo, undo } from "../state/feedback";
+import { isSidebarShortcut, sidebarApplies, toggleSidebar } from "../state/sidebar";
 import { isMac } from "../state/status";
 
 /**
  * Keyboard rules (SPEC §7.1):
  * - typing always wins: no single-key shortcut acts while a text field has focus;
  * - nothing app-level acts while a dialog or menu is open;
+ * - modified global keys (Hide / Show Sidebar) work while typing, like the platform's own;
  * - page keys are scoped to their page (pages register a handler while mounted).
  */
 export type PageHandler = (event: KeyboardEvent, info: { mod: boolean; editing: boolean }) => boolean;
@@ -40,6 +42,13 @@ export function installShortcuts(navigate: (path: string) => void, canNavigate: 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.defaultPrevented || e.isComposing) return;
     if (document.querySelector("dialog[open]") || isMenuOpen()) return;
+    if (isSidebarShortcut(e)) {
+      if (sidebarApplies() && canNavigate()) {
+        e.preventDefault();
+        toggleSidebar();
+      }
+      return;
+    }
     const editing = isEditable(document.activeElement);
     const mod = isMac() ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
     const key = e.key.toLowerCase();

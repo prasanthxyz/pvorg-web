@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { MappingKind, MappingRow, MappingState, TriState } from "../api/types";
-import { counted, humanize, matches } from "../app/format";
+import { counted, humanize, matches, setPageTitle } from "../app/format";
 import { usePageShortcuts } from "../app/shortcuts";
 import { useScrollBox, visibleRange } from "../app/virtual";
 import { Button, IconButton, SearchField, Segmented } from "../components/controls";
@@ -35,7 +35,7 @@ export default function MappingPage({ kind }: { kind: MappingKind }) {
   const title = kind === "galleries" ? "Gallery Mapping" : "Tag Mapping";
 
   useEffect(() => {
-    document.title = `${title} – pvorg`;
+    setPageTitle(title);
     let cancelled = false;
     api
       .mapping(kind)

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import type { ViewerState } from "../api/types";
+import { APP_NAME, setPageTitle } from "../app/format";
 import { usePageShortcuts } from "../app/shortcuts";
 import { Button, IconButton, Segmented } from "../components/controls";
 import { EmptyState, PageHeader } from "../components/feedback";
@@ -87,7 +88,7 @@ export default function ViewerPage() {
 
   const current = viewer?.current ?? null;
   useEffect(() => {
-    document.title = current ? `${current.video.title} – pvorg` : "Viewer – pvorg";
+    setPageTitle(current ? current.video.title : "Viewer");
   }, [current]);
 
   // Actions run one at a time, in the order they were requested, and each reads the
@@ -227,7 +228,7 @@ function ViewerEmpty({ viewer, onEditFilters, onMapping }: { viewer: ViewerState
     case "noVideos":
       return (
         <EmptyState icon="film" title="No Videos" actions={<Button onClick={() => void reloadLibrary()}>Reload Library</Button>}>
-          pvorg didn’t find any videos in <code>{empty.videosPath}</code>.
+          {APP_NAME} didn’t find any videos in <code>{empty.videosPath}</code>.
         </EmptyState>
       );
     case "noGalleries":
