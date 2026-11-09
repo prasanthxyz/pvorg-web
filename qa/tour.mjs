@@ -506,6 +506,8 @@ async function sidebarChecks(browser) {
   console.log("Sidebar checks");
   const page = await newPage(browser, "desktop", "dark");
   await api("/api/filters/reset", {});
+  // A playable video, not whatever the shuffle lands on (the fixture's .avi can't play).
+  await gotoCombination((c) => c.video.filename === "acme-jane_doe-harbor_lights.mp4");
   await open(page, "/");
   const mac = await page.evaluate(() =>
     /mac/i.test(navigator.userAgentData?.platform ?? navigator.platform));
