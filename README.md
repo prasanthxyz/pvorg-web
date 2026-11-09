@@ -5,7 +5,7 @@ them, and organize your library, from a local server in your browser.
 
 **What the app does and how it looks is specified in [docs/SPEC.md](docs/SPEC.md)**,
 shared unchanged with pvorg-native (macOS), pvorg-android and
-PP-Video-Organizer (Electron desktop). This README covers only building,
+pvorg-electron (Electron desktop). This README covers only building,
 running and developing the web app.
 
 ## Layout
