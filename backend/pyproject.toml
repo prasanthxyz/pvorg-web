@@ -1,0 +1,13 @@
+[project]
+name = "pvorg-backend"
+version = "1.0.0"
+description = "pvorg - personal video + gallery organizer backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+]
+
+[project.scripts]
+pvorg = "main:run"
