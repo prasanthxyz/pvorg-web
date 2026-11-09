@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds a small synthetic pvorg library (videos, galleries, pvorg.json) for
-# visual QA of the web app (the same library as pvorg-native's fixture, plus an
+# visual QA of the web app (the same library as pvorg-macos's fixture, plus an
 # .avi that browsers can't play). Requires ffmpeg. Usage:
 #   scripts/make-fixture.sh /tmp/pvorg-web-fixture
 # Then run the server against it:

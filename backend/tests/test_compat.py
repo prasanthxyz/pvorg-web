@@ -1,7 +1,7 @@
-"""The same pvorg.json edits must produce the same content as pvorg-native (SPEC §1.2).
+"""The same pvorg.json edits must produce the same content as pvorg-macos (SPEC §1.2).
 
 `fixtures/compat` holds the input and expected outputs of a six-step sequence
-first run against pvorg-native: startup normalization, a gallery mapping save,
+first run against pvorg-macos: startup normalization, a gallery mapping save,
 a tag mapping save, Exclude Pairing for a video without an entry, deleting a
 video and stale-entry cleanup. `expected/5-cleanup.json` is the native app's
 verbatim final output; steps 0–4 follow from the same rules. Content is
