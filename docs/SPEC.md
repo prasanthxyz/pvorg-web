@@ -1,12 +1,13 @@
 # pvorg — Product Specification
 
-> **One spec, three apps.** This file is shared, unchanged, by
-> **pvorg-native** (macOS), **pvorg-web** and **pvorg-android**, at
+> **One spec, four apps.** This file is shared, unchanged, by
+> **pvorg-native** (macOS), **pvorg-web**, **pvorg-android** and
+> **PP-Video-Organizer** (Electron desktop for macOS, Windows and Linux), at
 > `docs/SPEC.md` in each repository. When behavior or design changes, edit it
-> in one repository and copy it to the other two in the same change. The
+> in one repository and copy it to the other three in the same change. The
 > version line below identifies the copy.
 >
-> **Version 1.1 · 2026-11-09**
+> **Version 1.2 · 2026-11-09**
 
 pvorg (Personal Video + Gallery Organizer) is a single-user tool for browsing
 a personal library of videos paired with image galleries. It shows one
@@ -28,7 +29,8 @@ The spec has four parts:
   platform, what it can't do, and how it is verified.
 
 "Must" marks requirements; "should" marks strong defaults that a platform may
-deviate from with a recorded reason (§17).
+deviate from with a recorded reason (§18). Features marked **optional** (§6.8)
+follow their rules wherever an app offers them; §17 records which apps do.
 
 ---
 
@@ -44,6 +46,7 @@ configuration file, `pvorg.json`.
 | Platform | Configuration | Videos | Galleries |
 |---|---|---|---|
 | macOS | `~/pvorg.json`, or the file named by `PVORG_CONFIG` | `videosPath` in the config | `galleriesPath` in the config |
+| Desktop (Electron) | Same as macOS; a file chosen in Settings takes precedence over `PVORG_CONFIG` and is remembered until **Use Default** | `videosPath` | `galleriesPath` |
 | Web | Same as macOS, read and written by the server | `videosPath` | `galleriesPath` |
 | Android | `pvorg.json` in a root folder the user picks (Storage Access Framework) | `<root>/VID` | `<root>/GAL` |
 
@@ -131,8 +134,8 @@ sorted by filename. The gallery's name is the folder name, shown as-is.
 
 | Asset | Path | Written by | Read by |
 |---|---|---|---|
-| Contact sheet: 4×4 grid of frames at evenly spaced times, 1920 px wide JPEG | `<videos>/img/<video filename>.jpg` | macOS, Web, scripts | all |
-| Metadata cache: `{ "<filename>": { "duration", "width", "height", "fps", "file_size" } }` | `<videos>/cache.json` | macOS, Web, scripts | all |
+| Contact sheet: 4×4 grid of frames at evenly spaced times, 1920 px wide JPEG | `<videos>/img/<video filename>.jpg` | macOS, Desktop, Web, scripts | all |
+| Metadata cache: `{ "<filename>": { "duration", "width", "height", "fps", "file_size" } }` (duration in seconds, size in bytes) | `<videos>/cache.json` | macOS, Desktop, Web, scripts | all |
 | Seek-preview sprite sheet and WebVTT index | `<videos>/sprite/<video filename>_sprite.jpg` and `.vtt` | Web, scripts | Web |
 
 Assets from one platform must never break another. Each platform cleans up
@@ -158,6 +161,11 @@ removed together with the video when it is deleted (§3.7).
 - **Counts** use the platform's number formatting and correct plurals ("1
   video", "3 videos").
 - **Timecodes** are `m:ss`, or `h:mm:ss` from one hour.
+- **Quality score** (optional, §6.8): the video's average bitrate,
+  `file_size × 8 / duration`, normalized to 640 × 480 at 30 fps:
+  `bitrate ÷ (width × height ÷ 307200) ÷ (fps ÷ 30)`, shown in Mbps with one
+  decimal. It compares compression quality independently of resolution;
+  resolution is shown separately. Videos without metadata have no score.
 
 ---
 
@@ -208,7 +216,9 @@ screen (§6.7). Only one startup run may be in progress at a time.
 
 Platforms that can't generate previews (Android) skip step 5. Videos without a
 contact sheet are still part of the library; they show the "No Contact
-Sheet" state.
+Sheet" state. If `ffmpeg` or `ffprobe` isn't available, step 5 is skipped
+too, and a warning callout names the missing tool (optional, §6.8); the
+library still loads.
 
 ### 3.3 Mapping saves
 
@@ -285,6 +295,39 @@ The selection only ever contains videos that are currently shown. Searching
 drops hidden videos from it, so Delete can never remove something a search is
 hiding. Select All selects every video shown, which means every match when
 searching.
+
+### 3.9 Tag vocabulary (optional)
+
+- **Adding tags** appends names to `tags`. Names are trimmed, several may be
+  added at once separated by commas, and a name that matches an existing tag
+  ignoring case is skipped.
+- **Removing a tag** always confirms, naming how many videos have a decision
+  for it. It removes the name from `tags` and from every relation's `tags` and
+  `excludedTags`, drops pending Tag Mapping changes for it, and removes it
+  from the required tags in Filters.
+- Both are single atomic writes (§1.2), followed by a rescan.
+
+### 3.10 Importing from pvorg.yml (optional)
+
+The Electron app's earlier versions stored their library in `~/pvorg.yml`:
+lists of video file paths, gallery folder paths and tag names, plus explicit
+video–gallery and video–tag pairs. Every new video was paired with every
+gallery, so a missing pair meant the pairing had been removed. Import merges
+that file into `pvorg.json`:
+
+- **Preview first.** It lists the videos matched in the library (same
+  filename inside the videos folder, valid per §1.3), the videos not found
+  there, galleries matched by folder name, tags to add, and the number of
+  decisions to write. Nothing is written until the user confirms.
+- **Mapping.** For each matched video and matched gallery, a pair → Yes, no
+  pair → No. Each video–tag pair → Yes for that tag; other tags stay
+  Undecided. Tag names match the vocabulary ignoring case, keeping the
+  existing spelling; unknown names are added to it. A video listed more than
+  once, or only in pairs, is merged into one entry by filename.
+- **Existing decisions win.** Only Undecided cells are filled; no Yes or No
+  already in `pvorg.json` changes.
+- It never moves, copies or deletes files, and it is one atomic write
+  followed by a rescan.
 
 ---
 
@@ -476,8 +519,9 @@ the high-risk case.
 - **Appearance:** System, Light or Dark. **Dark is the default**, and the
   viewer stage is dark in all three.
 - **Library:** the configuration file and the videos and galleries folders,
-  each with a reveal action where the platform allows. On Android, this is
-  also where you choose a different library folder.
+  each with a reveal action where the platform allows. On Android and Desktop,
+  this is also where you choose a different library (folder or configuration
+  file).
 
 ### 6.6 Startup progress
 
@@ -491,13 +535,27 @@ Title: "Couldn't Load Your Library". Then the error and, for invalid JSON, the
 offending key or path. Where pvorg looks for its configuration. **Try Again**
 (the default action), and a reveal action when the file exists.
 
+### 6.8 Optional capabilities
+
+Capabilities an app may offer. Each follows these rules wherever it exists;
+§17 records which apps have it.
+
+| Capability | Behavior |
+|---|---|
+| **Video details** | Duration, resolution, frame rate, file size and quality score (§2), from `cache.json`, shown in the Library preview and card tooltip. The Library header gains a **Sort** menu: Title (default), Quality, Duration, Resolution, Size, each ascending or descending. Videos without metadata sort last. |
+| **Regenerate Contact Sheet** | A Library card menu item (where previews can be generated) that replaces `img/<filename>.jpg`, with a progress indicator on the card and a confirmation when done. |
+| **Tag vocabulary** | Tag Mapping's header gains **Add Tag** (a small dialog accepting comma-separated names), each tag column menu gains **Remove Tag…**, and the No Tags state offers Add Tag. Rules in §3.9. |
+| **Player volume and full screen** | In video mode, ↑ / ↓ change volume by 10%, M mutes, and F toggles full screen (Esc also leaves it). The transport bar shows a volume control and a full-screen button. |
+| **Missing-tool warning** | When `ffmpeg` or `ffprobe` is missing, a warning callout in the Library (and on the startup screen during step 5) names the tool and how to install it. |
+| **Import from pvorg.yml** | **File › Import from pvorg.yml…** (or Settings): choose the file (default `~/pvorg.yml`), review the preview, confirm. Rules in §3.10. |
+
 ---
 
 ## 7. Commands and input
 
 ### 7.1 Commands
 
-| Command | Where | Desktop keys (macOS / Web) | Android |
+| Command | Where | Keyboard (macOS, Desktop, Web) | Android |
 |---|---|---|---|
 | Go to Viewer / Filters | navigation, menu | V / C | navigation; same keys with a hardware keyboard |
 | Toggle contact sheet / video | Viewer | P | mode control, double-tap; P |
@@ -506,18 +564,20 @@ offending key or path. Where pvorg looks for its configuration. **Try Again**
 | Play / Pause | Viewer, video mode | Space | tap the video; Space |
 | Skip back / forward 10 s | Viewer, video mode | ← / → | transport buttons; ← / → |
 | Jump to 0%…90% | Viewer, video mode | 0…9 | 0…9 |
-| Undo / Redo | anywhere | ⌘Z / ⇧⌘Z (Web: Ctrl on non-Mac) | Snackbar Undo |
-| Select All / Deselect All / Delete | Library | ⌘A / Esc / ⌘⌫ (Web: Ctrl on non-Mac) | header actions; selection mode |
-| Save mapping changes | Mapping | ⌘S (Web: Ctrl on non-Mac) | header Save |
-| Reload Library | anywhere | ⌘R on macOS; app menu on Web | overflow menu |
+| Volume up / down, Mute, Full screen (optional, §6.8) | Viewer, video mode | ↑ / ↓, M, F | — |
+| Undo / Redo | anywhere | ⌘Z / ⇧⌘Z (Ctrl on non-Mac) | Snackbar Undo |
+| Select All / Deselect All / Delete | Library | ⌘A / Esc / ⌘⌫ (Ctrl+A / Esc / Delete on non-Mac) | header actions; selection mode |
+| Save mapping changes | Mapping | ⌘S (Ctrl on non-Mac) | header Save |
+| Reload Library | anywhere | ⌘R (Ctrl+R on non-Mac); More menu on Web | overflow menu |
 
 Rules:
 
 - **Typing always wins.** While a text field has focus, every key goes to
   the field, including the single-key shortcuts above. Esc in a search field
-  follows the platform convention: it clears the field on macOS, and leaves
-  the field while keeping its query on Android and the Web. Clicking or
-  tapping elsewhere also leaves it, after which the shortcuts work again.
+  follows the platform convention: it clears the field on macOS and the Web,
+  and leaves the field while keeping its query on Android and Desktop.
+  Clicking or tapping elsewhere also leaves it, after which the shortcuts work
+  again.
 - **Scoped keys.** Viewer keys act only while the viewer is showing, and
   playback keys only in video mode. Elsewhere, arrows and Space keep their
   usual behavior.
@@ -578,7 +638,7 @@ Values are in points (macOS), dp (Android) or CSS px (web).
 
 | Role | Light | Dark | Use |
 |---|---|---|---|
-| Accent | platform/user accent | same | selection, primary actions, links |
+| Accent | platform/user accent; `#2563EB` on Web and Desktop | platform/user accent; `#3B82F6` on Web and Desktop | selection, primary actions, links |
 | Subtle fill / hover | primary at 6% / 10% | same | unselected chips, undecided cells, hover |
 | Selected chip fill / hover | accent at 17% / 24% | same | selected chips |
 | Hairline | system separator | same | dividers |
@@ -694,7 +754,12 @@ decision changes.
 | Dark stage in every appearance; Dark remains the default appearance. | Media reads true, and the original app was dark-only. |
 | Undoing by any route replaces the Exclude message with "Restored …". | After ⌘Z or a keyboard undo, the old message's Undo lingered and did nothing. |
 | A video whose file can't be deleted keeps its decisions and cached metadata. | Removing them while the file stays would silently lose work. |
-| One shared spec for three apps. | One product, one source of truth; platform sections record the honest differences. |
+| The Electron app adopts the shared `pvorg.json` library, with a one-time `pvorg.yml` importer. | One library that works in every app. Its old model (hand-added paths, yes-only pairs) couldn't be shared. |
+| Electron renderer is sandboxed and talks to the main process over typed IPC; media load through a restricted custom protocol; no local HTTP server. | The old local server accepted requests from any origin, so any web page could edit the library, and web security was switched off. |
+| Quality score normalizes bitrate to 640 × 480 at 30 fps. | The old formula multiplied by resolution, counting it twice; resolution is now its own column. |
+| Web and Desktop use a fixed blue accent. | Browsers don't expose the system accent; Desktop shares the web design system. |
+| Extras are specified once as optional capabilities, with per-app availability. | One app's extra features shouldn't fork the product's behavior. |
+| One shared spec for all apps. | One product, one source of truth; platform sections record the honest differences. |
 
 ---
 
@@ -808,30 +873,69 @@ Hardware-keyboard shortcuts follow §7.1.
     folder picker, so an emulator tour can screenshot every page and state in
     both appearances.
 
-## 16. Conformance
+## 16. Desktop — PP-Video-Organizer (Electron)
+
+- **Stack.** Electron (current stable), electron-vite, React + TypeScript.
+  The main process owns the library: it implements Part I in TypeScript,
+  reads and writes `pvorg.json`, scans folders and runs `ffmpeg` and
+  `ffprobe` from `PATH`. Packaged with electron-builder for macOS, Windows and
+  Linux.
+- **Security.**
+  - The renderer is sandboxed with context isolation and no Node access, and
+    calls the main process only through a typed preload API over IPC.
+  - Video and image files load through a custom `pvorg-media:` protocol that
+    serves only files inside the library's folders.
+  - A strict Content-Security-Policy; no remote content; no local HTTP
+    server; external links open in the default browser.
+- **Structure.** A native application menu per OS, with File (Reload Library,
+  Clean Up Stale Entries, Import from pvorg.yml), Edit, View, Go, Viewer,
+  Window and Help, carrying the §7.1 accelerators. A sidebar like the web
+  app's, and native window chrome.
+- **Platform actions.** Open in Default App and Reveal in Finder / Show in
+  Explorer / Show in Folder use the OS shell.
+- **Playback.** Chromium codecs: mp4 (H.264) and webm play, mkv often plays,
+  avi and wmv don't. Scrubber frames come from a hidden second video element,
+  generated asynchronously and cached per second.
+- **Previews.** Generates contact sheets and metadata like macOS (§3.2).
+- **Optional capabilities.** All of §6.8.
+- **Verification.**
+  - Unit tests for every Part I rule, including the shared compatibility
+    sequence.
+  - A packaged build.
+  - A Playwright tour that launches the real Electron app against a fixture
+    library and screenshots every page and state in both appearances.
+  - `PVORG_CONFIG` points it at another library.
+
+## 17. Conformance
 
 Status of each app against this spec at the version above. ✓ conforms,
-◐ partial (see note), — not applicable.
+◐ partial (see note), — not applicable or not offered.
 
-| Area | macOS | Web | Android |
-|---|---|---|---|
-| §1–3 data rules (tags opt-in, mapping saves, Exclude Pairing + undo, deletion, stale cleanup) | ◐ v1.1 changes (undo feedback, failed-delete rule) written but not yet built: Xcode unavailable | ✓ | ✓ |
-| §4 navigation and page names | ✓ | ✓ | ✓ |
-| §5 viewer, all states | ✓ | ✓ | ✓ |
-| §6 Filters, Library, Mapping, Cleanup, Settings | ✓ | ✓ | ✓ |
-| §7 commands and keyboard rules | ✓ | ✓ | ✓ |
-| §8–11 design, accessibility, performance | ✓ | ◐ no automated contrast audit | ◐ no TalkBack or large-font pass yet |
-| Preview generation (§3.2 step 5) | ✓ | ✓ | — (by design, §15.1) |
+| Area | macOS | Desktop | Web | Android |
+|---|---|---|---|---|
+| §1–3 data rules (tags opt-in, mapping saves, Exclude Pairing + undo, deletion, stale cleanup) | ◐ v1.1 changes (undo feedback, failed-delete rule) written but not yet built: Xcode unavailable | ✓ | ✓ | ✓ |
+| §4 navigation and page names | ✓ | ✓ | ✓ | ✓ |
+| §5 viewer, all states | ✓ | ✓ | ✓ | ✓ |
+| §6.1–6.7 Filters, Library, Mapping, Cleanup, Settings | ✓ | ✓ | ✓ | ✓ |
+| §7 commands and keyboard rules | ✓ | ◐ plain keys are tested through the page, not the OS menu, so no test proves a menu item never fires twice for one key press | ✓ | ✓ |
+| §8–11 design, accessibility, performance | ✓ | ◐ no automated contrast audit | ◐ no automated contrast audit | ◐ no TalkBack or large-font pass yet |
+| Preview generation (§3.2 step 5) | ✓ | ✓ | ✓ | — (by design, §15.1) |
+| Optional: video details and sort | — | ✓ | — | — |
+| Optional: regenerate contact sheet | — | ✓ | — | — |
+| Optional: tag vocabulary | — | ✓ | — | — |
+| Optional: player volume and full screen | — | ✓ | — | — |
+| Optional: missing-tool warning | — | ✓ | — | — |
+| Optional: import from pvorg.yml | — | ✓ | — | — |
 
-## 17. Maintaining this spec
+## 18. Maintaining this spec
 
-- **One file, three copies.** Change `docs/SPEC.md` in all three repositories
+- **One file, four copies.** Change `docs/SPEC.md` in all four repositories
   in the same piece of work, bump the version line, and keep the copies
   byte-identical.
 - **Spec first.** Update the spec before or with the code. A behavior that
   isn't in the spec is a bug in one or the other.
 - **Deviations.** A platform that can't meet a "must" records the reason in
-  its Part IV section and in §16, rather than silently differing.
+  its Part IV section and in §17, rather than silently differing.
 - **Decisions.** New UX decisions add a row to §12 with the reason.
 - **Platform docs.** Platform READMEs cover building, running and developer
   tooling only. They link here for behavior and design.
