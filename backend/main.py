@@ -34,6 +34,7 @@ def create_app(*, start_pipeline: bool = True, preprocess: bool = True) -> FastA
         if start_pipeline:
             pipeline.start()
         yield
+        pipeline.shutdown()
 
     app = FastAPI(title="PP Video Organizer", lifespan=lifespan)
     app.state.pvorg = state

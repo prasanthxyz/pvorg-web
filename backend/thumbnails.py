@@ -20,11 +20,15 @@ logger = logging.getLogger(__name__)
 SIZES = (320, 720, 1920)
 
 
-def cache_dir() -> Path:
-    """`PVORG_CACHE_DIR`, else `~/.cache/pvorg-web/thumbnails`."""
+def cache_root() -> Path:
+    """`PVORG_CACHE_DIR`, else `~/.cache/pvorg-web`: the web app's own, disposable files."""
     override = os.environ.get("PVORG_CACHE_DIR")
-    base = Path(override).expanduser() if override else Path.home() / ".cache" / "pvorg-web"
-    return base / "thumbnails"
+    return Path(override).expanduser() if override else Path.home() / ".cache" / "pvorg-web"
+
+
+def cache_dir() -> Path:
+    """`<cache root>/thumbnails`."""
+    return cache_root() / "thumbnails"
 
 
 def nearest_size(requested: int) -> int | None:

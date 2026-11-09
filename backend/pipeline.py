@@ -11,15 +11,17 @@ from cleanup import cleanup_orphaned_assets
 from config import ConfigError, config_path, load_config, normalize_relations, save_config
 from preprocessor import run_preprocessing
 from scanner import scan_galleries, scan_videos
+from sprites import SpriteWorker
 from state import AppState, Startup
 
 logger = logging.getLogger(__name__)
 
 
 class Pipeline:
-    def __init__(self, state: AppState, *, preprocess: bool = True) -> None:
+    def __init__(self, state: AppState, *, preprocess: bool = True, sprites: SpriteWorker | None = None) -> None:
         self.state = state
         self.preprocess = preprocess
+        self.sprites = sprites or SpriteWorker()
         self._running = threading.Lock()
 
     def start(self) -> bool:
@@ -44,7 +46,13 @@ class Pipeline:
     def _step(self, title: str, detail: str | None = None, fraction: float | None = None) -> None:
         self.state.startup = Startup(phase="loading", step=title, detail=detail, fraction=fraction)
 
+    def shutdown(self) -> None:
+        """Stop background sprite work (and its ffmpeg) when the server stops."""
+        self.sprites.stop()
+
     def _run(self) -> None:
+        # A reload rescans everything; stop sprites for the old scan before touching the folders.
+        self.sprites.stop()
         try:
             self._step("Loading Configuration", str(config_path()))
             config = load_config()
@@ -71,6 +79,9 @@ class Pipeline:
 
             self.state.apply_library(config, galleries, videos, skipped, reset_filters=True)
             self.state.startup = Startup(phase="ready", step="Ready")
+            if self.preprocess:
+                # Seek-preview sprites are slow for long videos, so they come after the library opens.
+                self.sprites.start(config.videosPath, [v.filename for v in videos])
             logger.info("Library ready: %d videos, %d galleries, %d skipped", len(videos), len(galleries),
                         len(skipped))
         except ConfigError as e:

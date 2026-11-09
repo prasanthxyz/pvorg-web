@@ -1,4 +1,4 @@
-"""Startup preprocessing: TGP generation, sprite sheets, and metadata extraction."""
+"""Preview generation: contact sheets (TGP) and metadata at startup, seek-preview sprites in the background."""
 
 from __future__ import annotations
 
@@ -7,10 +7,13 @@ import logging
 import math
 import shutil
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 from cache import MetadataCache
+from config import atomic_write_text
 from scanner import Video
 
 logger = logging.getLogger(__name__)
@@ -25,6 +28,8 @@ TGP_TILE_WIDTH = 480
 SPRITE_INTERVAL_SECONDS = 2
 SPRITE_COLS = 10
 SPRITE_TILE_WIDTH = 160
+# Generous, because sprites are background work; keyframe-only decoding rarely needs more than seconds.
+SPRITE_TIMEOUT_SECONDS = 600
 
 
 def _get_video_duration(video_path: Path) -> float | None:
@@ -168,8 +173,20 @@ def generate_tgp(video_path: Path, output_path: Path) -> bool:
         return False
 
 
-def generate_sprite(video_path: Path, sprite_dir: Path, video_name: str) -> bool:
-    """Generate a scrubbing sprite sheet (1 frame every 2s) + VTT file."""
+class SpriteCancelled(Exception):
+    """Sprite generation was stopped because the library is reloading or the server is stopping."""
+
+
+def generate_sprite(video_path: Path, sprite_dir: Path, video_name: str, *,
+                    stop: threading.Event | None = None,
+                    timeout: float = SPRITE_TIMEOUT_SECONDS) -> bool:
+    """Generate a scrubbing sprite sheet (one tile every 2 s) and its VTT index.
+
+    Only keyframes are decoded (`-skip_frame nokey`): each tile shows the nearest earlier
+    keyframe, which is plenty for a scrubber preview and tens of times cheaper than decoding
+    every frame of a long video. Raises SpriteCancelled when `stop` is set, and OSError when
+    ffmpeg can't be started.
+    """
     sprite_path = sprite_dir / f"{video_name}_sprite.jpg"
     vtt_path = sprite_dir / f"{video_name}_sprite.vtt"
 
@@ -184,21 +201,51 @@ def generate_sprite(video_path: Path, sprite_dir: Path, video_name: str) -> bool
     rows = max(1, math.ceil(num_frames / SPRITE_COLS))
 
     sprite_dir.mkdir(parents=True, exist_ok=True)
-
-    # Extract frames into a single sprite sheet using ffmpeg
-    scale_w = SPRITE_TILE_WIDTH
+    # Written beside the target and renamed. The partial name ends in "_sprite.jpg" but names no
+    # video, so the startup orphan cleanup removes it if a run is ever killed mid-write.
+    partial = sprite_dir / f".{video_name}.partial_sprite.jpg"
     cmd = [
-        FFMPEG, "-i", str(video_path),
-        "-vf", f"fps=1/{SPRITE_INTERVAL_SECONDS},scale={scale_w}:-1,tile={SPRITE_COLS}x{rows}",
+        FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-skip_frame", "nokey", "-i", str(video_path),
+        "-an", "-sn", "-dn",
+        # tpad holds the last keyframe to the end, so the tiles after it (and a clip with a
+        # single keyframe) aren't left blank by the fps filter.
+        "-vf", (f"tpad=stop_mode=clone:stop_duration={duration:.3f},fps=1/{SPRITE_INTERVAL_SECONDS},"
+                f"scale={SPRITE_TILE_WIDTH}:-1,tile={SPRITE_COLS}x{rows}"),
         "-frames:v", "1", "-y",
-        str(sprite_path),
+        str(partial),
     ]
 
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + timeout
+    done = False
     try:
-        subprocess.run(cmd, capture_output=True, timeout=120, check=True)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        logger.error("Sprite generation failed for %s: %s", video_path, e)
-        return False
+        while True:
+            try:
+                _, err = proc.communicate(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                if stop is not None and stop.is_set():
+                    raise SpriteCancelled from None
+                if time.monotonic() > deadline:
+                    logger.error("Sprite generation timed out after %ds for %s", timeout, video_path)
+                    return False
+        if proc.returncode != 0:
+            logger.error("Sprite generation failed for %s: %s", video_path, (err or "").strip()[-500:])
+            return False
+        try:
+            partial.replace(sprite_path)
+        except OSError as e:
+            logger.error("Sprite generation produced no image for %s: %s", video_path, e)
+            return False
+        done = True
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()  # reap it and close its stderr pipe
+        if not done:
+            partial.unlink(missing_ok=True)
 
     # Generate VTT file for the sprite with exact tile coordinates.
     sprite_size = _get_media_dimensions(sprite_path)
@@ -247,7 +294,7 @@ def _generate_vtt(
         lines.append(f"{sprite_filename}#xywh={x},{y},{tile_width},{tile_height}")
         lines.append("")
 
-    vtt_path.write_text("\n".join(lines))
+    atomic_write_text(vtt_path, "\n".join(lines))
 
 
 def _format_vtt_time(seconds: float) -> str:
@@ -264,15 +311,16 @@ def run_preprocessing(
     cache: MetadataCache,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[str]:
-    """Generate missing contact sheets, sprites and metadata (SPEC §3.2 step 5).
+    """Generate missing contact sheets and metadata (SPEC §3.2 step 5).
+
+    Seek-preview sprites are not made here: they're slow for long videos, so the library opens
+    first and `sprites.SpriteWorker` makes them in the background.
 
     Failures for individual videos are logged and returned, never fatal: a video
     without a contact sheet still appears, with the "No Contact Sheet" state.
     """
     vpath = Path(videos_path)
     img_dir = vpath / "img"
-    sprite_dir = vpath / "sprite"
-
     total = len(videos)
     failures: list[str] = []
     for idx, video in enumerate(videos):
@@ -285,8 +333,6 @@ def run_preprocessing(
 
         if not generate_tgp(video_file, img_dir / f"{video.filename}.jpg"):
             failures.append(f"Contact sheet failed: {video.filename}")
-        if not generate_sprite(video_file, sprite_dir, video.filename):
-            failures.append(f"Sprite failed: {video.filename}")
         if not cache.has(video.filename):
             meta = _extract_metadata(video_file)
             if meta:

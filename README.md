@@ -47,7 +47,7 @@ Open <http://127.0.0.1:8000>. The server also serves the built frontend.
 | Environment variable | Default | Purpose |
 |---|---|---|
 | `PVORG_CONFIG` | `~/pvorg.json` | The library's configuration file (SPEC §1.1) |
-| `PVORG_CACHE_DIR` | `~/.cache/pvorg-web` | Downsized thumbnails; safe to delete |
+| `PVORG_CACHE_DIR` | `~/.cache/pvorg-web` | Downsized thumbnails, and the videos whose seek-preview sprite failed (retried once deleted); safe to delete |
 | `PVORG_PORT` | `8000` | Port for `main.run()` and the Vite dev proxy target |
 
 ## Develop
